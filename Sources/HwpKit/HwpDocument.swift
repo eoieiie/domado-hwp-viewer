@@ -40,7 +40,13 @@ public enum HwpFormat: String {
 /// A parsed 한글 document, in either the binary `.hwp` or the newer `.hwpx` form.
 public struct HwpDocument {
     public let paragraphs: [Paragraph]
+    /// Body content in document order, with tables kept as grids.
+    public let blocks: [Block]
     public let format: HwpFormat
+
+    public var tables: [Table] {
+        blocks.compactMap { if case .table(let t) = $0 { return t } else { return nil } }
+    }
 
     public var text: String { paragraphs.map(\.text).joined(separator: "\n") }
 
@@ -60,23 +66,41 @@ public struct HwpDocument {
         // people rename these files constantly.
         if data.count >= 4, data[data.startIndex] == 0x50, data[data.startIndex + 1] == 0x4B {
             paragraphs = try HwpxParser.parse(data: data)
+            blocks = paragraphs.map { Block.paragraph($0) }
             format = .owpml
         } else {
-            paragraphs = try Self.parseBinary(data: data)
+            let records = try Self.binaryRecords(data: data)
+            blocks = TableBuilder.build(records: records, decode: Self.decodeParagraph)
+            paragraphs = Self.flatten(blocks)
             format = .binary
         }
     }
 
     // MARK: - Binary .hwp
 
-    private static func parseBinary(data: Data) throws -> [Paragraph] {
+    /// Paragraph view of the block list, so existing callers keep working.
+    private static func flatten(_ blocks: [Block]) -> [Paragraph] {
+        blocks.flatMap { block -> [Paragraph] in
+            switch block {
+            case .paragraph(let p):
+                return [p]
+            case .table(let t):
+                return t.rows.flatMap { row in
+                    row.flatMap { cell in cell.lines.map { Paragraph(text: $0, level: 1) } }
+                }
+            }
+        }
+    }
+
+    private static func binaryRecords(data: Data) throws
+        -> [(tag: UInt16, level: Int, payload: Data)] {
         let cf = try CompoundFile(data: data)
         guard let header = cf.read("FileHeader"), header.count >= 40 else {
             throw HwpError.noFileHeader
         }
         let compressed = header.u32(at: 36) & 1 == 1
 
-        var result: [Paragraph] = []
+        var result: [(tag: UInt16, level: Int, payload: Data)] = []
         let sections = cf.streamNames
             .filter { $0.hasPrefix("Section") }
             .sorted { (Int($0.dropFirst(7)) ?? 0) < (Int($1.dropFirst(7)) ?? 0) }
@@ -87,16 +111,8 @@ public struct HwpDocument {
                 guard let inflated = inflate(raw) else { throw HwpError.decompressionFailed }
                 raw = inflated
             }
-            for record in RecordSequence(data: raw) where record.tag == .paragraphText {
-                let line = decodeParagraph(record.payload)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !line.isEmpty {
-                    // Record levels step by two per container: body text sits at
-                    // level 1, a table cell's paragraphs at 3, a nested table's at
-                    // 5. Halving gives the nesting depth.
-                    let depth = max(0, (Int(record.level) - 1) / 2)
-                    result.append(Paragraph(text: line, level: depth))
-                }
+            for record in RecordSequence(data: raw) {
+                result.append((tag: record.rawTag, level: Int(record.level), payload: record.payload))
             }
         }
         return result
@@ -115,7 +131,7 @@ public struct HwpDocument {
                                                     14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
     private static let skipControls: Set<UInt16> = [0, 10, 13, 24, 25, 26, 27, 28, 29, 30, 31]
 
-    private static func decodeParagraph(_ buffer: Data) -> String {
+    static func decodeParagraph(_ buffer: Data) -> String {
         var scalars = String.UnicodeScalarView()
         var i = 0
         while i + 1 < buffer.count {
@@ -138,14 +154,7 @@ public struct HwpDocument {
 // MARK: - Record stream
 
 struct HwpRecord {
-    enum Tag: UInt16 {
-        case paragraphHeader = 66
-        case paragraphText = 67
-        case paragraphCharShape = 68
-        case unknown = 0
-    }
-
-    let tag: Tag
+    let rawTag: UInt16
     let level: UInt16
     let payload: Data
 }
@@ -174,8 +183,6 @@ struct RecordSequence: Sequence, IteratorProtocol {
         guard offset + size <= data.count else { return nil }
         let payload = data.subdata(in: (data.startIndex + offset)..<(data.startIndex + offset + size))
         offset += size
-        return HwpRecord(tag: HwpRecord.Tag(rawValue: rawTag) ?? .unknown,
-                         level: level,
-                         payload: payload)
+        return HwpRecord(rawTag: rawTag, level: level, payload: payload)
     }
 }

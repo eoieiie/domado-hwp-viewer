@@ -49,6 +49,7 @@ final class DocumentModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var query = ""
     @Published var showTableIndent = true
+    @Published var showTableGrid = true
 
     static let readableTypes: [UTType] = ["hwp", "hwpx"]
         .compactMap { UTType(filenameExtension: $0) }
@@ -184,8 +185,9 @@ struct ContentView: View {
                     .padding(.vertical, 5)
                     .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
 
-                    Toggle("표 들여쓰기", isOn: $model.showTableIndent)
+                    Toggle("표 보기", isOn: $model.showTableGrid)
                         .toggleStyle(.checkbox)
+                        .disabled(!model.query.isEmpty)
                     Button("복사") { model.copyAll() }
                     Button("저장") { model.presentSavePanel() }
                 }
@@ -207,10 +209,27 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(40)
-        } else if model.visible.isEmpty {
+        } else if !model.query.isEmpty && model.visible.isEmpty {
             Text("‘\(model.query)’ 검색 결과가 없습니다")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if model.query.isEmpty && model.showTableGrid, let doc = model.document {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(doc.blocks.enumerated()), id: \.offset) { _, block in
+                        switch block {
+                        case .paragraph(let p):
+                            Text(p.text)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        case .table(let table):
+                            TableGrid(table: table)
+                        }
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 7) {
@@ -279,5 +298,54 @@ struct DropPrompt: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(isTargeted ? Color.accentColor.opacity(0.06) : Color.clear)
+    }
+}
+
+
+/// Renders a reconstructed table as a real grid. Column spans widen a cell;
+/// row spans are drawn in their starting row (merged heights are not simulated).
+struct TableGrid: View {
+    let table: HwpKit.Table
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
+                HStack(alignment: .top, spacing: 0) {
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
+                        CellView(cell: cell)
+                    }
+                }
+            }
+        }
+        .overlay(RoundedRectangle(cornerRadius: 3).stroke(.separator, lineWidth: 1))
+    }
+}
+
+struct CellView: View {
+    let cell: TableCell
+
+    private var minWidth: CGFloat { 96 * CGFloat(cell.columnSpan) }
+    private var maxWidth: CGFloat { 420 * CGFloat(cell.columnSpan) }
+
+    var body: some View {
+        Text(cell.text)
+            .textSelection(.enabled)
+            .font(.callout)
+            .frame(minWidth: minWidth, maxWidth: maxWidth, alignment: .topLeading)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .overlay(alignment: .topTrailing) { spanBadge }
+            .background(.quaternary.opacity(0.25))
+            .border(.separator, width: 0.5)
+    }
+
+    @ViewBuilder
+    private var spanBadge: some View {
+        if cell.rowSpan > 1 {
+            Text("↕\(cell.rowSpan)")
+                .font(.system(size: 8))
+                .foregroundStyle(.tertiary)
+                .padding(2)
+        }
     }
 }

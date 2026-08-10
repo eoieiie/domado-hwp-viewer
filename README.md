@@ -12,8 +12,8 @@
 ## 기능
 
 - 드래그 앤 드롭 / `⌘O` / Finder "다음으로 열기"
+- **표를 실제 격자로 복원** — 행·열 주소와 병합(span)까지
 - 문서 내 검색 (일치 항목 하이라이트)
-- 표 구조 들여쓰기
 - `.txt` 저장 (`⌘S`), 전체 복사 (`⌘⇧C`)
 - 확장자가 틀려도 컨테이너 시그니처로 판별
 
@@ -38,6 +38,7 @@ Sources/
 │   ├── CompoundFile.swift  OLE 컨테이너 (CFBF)
 │   ├── ZipArchive.swift    최소 ZIP 리더 (.hwpx용)
 │   ├── HwpDocument.swift   포맷 판별 + 바이너리 레코드 파싱
+│   ├── TableBuilder.swift  레코드 스트림 → 표 격자 복원
 │   └── HwpxParser.swift    OWPML XML 파싱
 ├── hwpcli/                 터미널 도구
 └── HwpViewer/              SwiftUI 앱
@@ -72,9 +73,25 @@ OLE Compound File (CFBF)
 스펙 문서 없이 만든 파서라 **독립 구현 2개를 교차 검증**했다.
 Python 참조 구현과 Swift 구현의 출력을 diff로 비교 — 120문단 완전 일치.
 
+### 표 복원
+
+`CTRL_HEADER`의 컨트롤 ID가 `tbl `이면 표가 열린다. 그보다 깊은 레코드가 표의
+내용이고, `LIST_HEADER` 하나가 셀 하나다. 셀 주소는 페이로드 오프셋 8부터:
+
+| 오프셋 | 필드 |
+|---|---|
+| 8 | col |
+| 10 | row |
+| 12 | colSpan |
+| 14 | rowSpan |
+
+머리말·꼬리말·캡션도 `LIST_HEADER`를 갖기 때문에, **표 컨트롤 바로 아래 레벨**
+(`controlLevel + 1`)인 것만 셀로 받아들여야 한다. 이걸 빼먹으면 머리말 리스트가
+셀로 잡혀 열 개수가 5만 단위로 튄다.
+
 ## 남은 것
 
-- 표 셀 병합 정보 (현재는 셀을 순서대로 나열)
+- 행 병합(rowSpan)의 실제 높이 병합 렌더링 (현재는 시작 행에만 표시)
 - Quick Look 확장 (스페이스바 미리보기)
 - 이미지 추출
 - 코드 서명 · 공증
