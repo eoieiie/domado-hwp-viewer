@@ -21,34 +21,11 @@ func render(size: Int) -> Data {
     ] as CFArray, locations: [0, 1])!
     ctx.drawLinearGradient(grad, start: CGPoint(x: 0, y: s), end: CGPoint(x: 0, y: 0), options: [])
 
-    // Document sheet peeking out behind the tomato — this is a document app
-    let dw = s * 0.40, dh = s * 0.50
-    let dx = s * 0.50 - dw * 0.30, dy = s * 0.30
-    let fold = dw * 0.26
-    let doc = CGMutablePath()
-    doc.move(to: CGPoint(x: dx, y: dy))
-    doc.addLine(to: CGPoint(x: dx + dw, y: dy))
-    doc.addLine(to: CGPoint(x: dx + dw, y: dy + dh - fold))
-    doc.addLine(to: CGPoint(x: dx + dw - fold, y: dy + dh))
-    doc.addLine(to: CGPoint(x: dx, y: dy + dh))
-    doc.closeSubpath()
-    ctx.addPath(doc)
-    ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 0.96))
-    ctx.fillPath()
-    ctx.addPath(doc)
-    ctx.setStrokeColor(CGColor(red: 0.85, green: 0.62, blue: 0.50, alpha: 0.55))
-    ctx.setLineWidth(max(1, s * 0.008))
-    ctx.strokePath()
-    // text lines on the sheet
-    ctx.setFillColor(CGColor(red: 0.80, green: 0.60, blue: 0.50, alpha: 0.45))
-    for i in 0..<3 {
-        let ly = dy + dh - fold - s * 0.055 - CGFloat(i) * s * 0.055
-        ctx.fill(CGRect(x: dx + s * 0.05, y: ly, width: dw - s * 0.10, height: max(1, s * 0.018)))
-    }
-
     // Tomato body
-    let r = s * 0.245
-    let cx = s * 0.415, cy = s * 0.375
+    // Body radius and centre chosen so the calyx and stem are included when
+    // balancing the shape — the visual centre sits slightly below the body centre.
+    let r = s * 0.300
+    let cx = s * 0.500, cy = s * 0.472
     ctx.saveGState()
     ctx.addEllipse(in: CGRect(x: cx - r * 1.06, y: cy - r, width: r * 2.12, height: r * 1.94))
     ctx.clip()
