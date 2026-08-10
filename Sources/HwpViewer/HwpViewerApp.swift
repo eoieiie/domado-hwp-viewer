@@ -214,22 +214,7 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.query.isEmpty && model.showTableGrid, let doc = model.document {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(Array(doc.blocks.enumerated()), id: \.offset) { _, block in
-                        switch block {
-                        case .paragraph(let p):
-                            Text(p.text)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        case .table(let table):
-                            TableGrid(table: table)
-                        }
-                    }
-                }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            BlocksView(blocks: doc.blocks)
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 7) {
@@ -302,17 +287,59 @@ struct DropPrompt: View {
 }
 
 
-/// Renders a reconstructed table as a real grid. Column spans widen a cell;
-/// row spans are drawn in their starting row (merged heights are not simulated).
+/// Document body: loose paragraphs and reconstructed tables, in order.
+struct BlocksView: View {
+    let blocks: [Block]
+
+    var body: some View {
+        GeometryReader { geo in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                        row(for: block, width: geo.size.width - 40)
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func row(for block: Block, width: CGFloat) -> some View {
+        switch block {
+        case .paragraph(let p):
+            Text(p.text)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .table(let table):
+            TableGrid(table: table, availableWidth: width)
+        }
+    }
+}
+
+/// Renders a reconstructed table as a real grid.
+///
+/// Column widths are resolved up front and every cell gets an exact width. Giving
+/// cells flexible min/max frames instead makes HStack search for a layout, and
+/// with multi-thousand-character cells each probe re-lays out the whole string —
+/// that combination pegs the main thread.
 struct TableGrid: View {
     let table: HwpKit.Table
+    let availableWidth: CGFloat
+
+    private var columnWidth: CGFloat {
+        let columns = CGFloat(max(1, table.columnCount))
+        return max(70, (availableWidth / columns).rounded(.down))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
                 HStack(alignment: .top, spacing: 0) {
                     ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                        CellView(cell: cell)
+                        CellView(cell: cell, width: columnWidth * CGFloat(cell.columnSpan))
                     }
                 }
             }
@@ -323,29 +350,40 @@ struct TableGrid: View {
 
 struct CellView: View {
     let cell: TableCell
+    let width: CGFloat
 
-    private var minWidth: CGFloat { 96 * CGFloat(cell.columnSpan) }
-    private var maxWidth: CGFloat { 420 * CGFloat(cell.columnSpan) }
+    /// A 2,000-character cell is prose, not tabular data. Collapsing it by default
+    /// keeps text layout cheap; the reader can expand what they actually need.
+    private static let collapseThreshold = 400
 
-    var body: some View {
-        Text(cell.text)
-            .textSelection(.enabled)
-            .font(.callout)
-            .frame(minWidth: minWidth, maxWidth: maxWidth, alignment: .topLeading)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 7)
-            .overlay(alignment: .topTrailing) { spanBadge }
-            .background(.quaternary.opacity(0.25))
-            .border(.separator, width: 0.5)
+    @State private var expanded = false
+
+    private var isLong: Bool { cell.text.count > Self.collapseThreshold }
+
+    private var shown: String {
+        if isLong && !expanded {
+            return String(cell.text.prefix(Self.collapseThreshold)) + "…"
+        }
+        return cell.text
     }
 
-    @ViewBuilder
-    private var spanBadge: some View {
-        if cell.rowSpan > 1 {
-            Text("↕\(cell.rowSpan)")
-                .font(.system(size: 8))
-                .foregroundStyle(.tertiary)
-                .padding(2)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(shown)
+                .textSelection(.enabled)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: max(20, width - 18), alignment: .topLeading)
+            if isLong {
+                Button(expanded ? "접기" : "더 보기") { expanded.toggle() }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
         }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .frame(width: width, alignment: .topLeading)
+        .background(.quaternary.opacity(0.25))
+        .border(.separator, width: 0.5)
     }
 }
