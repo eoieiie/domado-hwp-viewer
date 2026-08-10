@@ -16,14 +16,23 @@ public struct Table: Hashable, Identifiable {
     public let cells: [TableCell]
     public let id: Int
 
-    public var rowCount: Int { cells.map { $0.row + $0.rowSpan }.max() ?? 0 }
-    public var columnCount: Int { cells.map { $0.column + $0.columnSpan }.max() ?? 0 }
+    /// Cells grouped by starting row, each row ordered left to right.
+    ///
+    /// Computed once here rather than on access: SwiftUI reads this on every
+    /// layout pass, and regrouping a hundred cells per pass is what made window
+    /// resizing crawl.
+    public let rows: [[TableCell]]
+    public let rowCount: Int
+    public let columnCount: Int
 
-    /// Cells grouped by their starting row, each row ordered left to right.
-    public var rows: [[TableCell]] {
-        Dictionary(grouping: cells, by: \.row)
+    init(cells: [TableCell], id: Int) {
+        self.cells = cells
+        self.id = id
+        self.rows = Dictionary(grouping: cells, by: \.row)
             .sorted { $0.key < $1.key }
             .map { $0.value.sorted { $0.column < $1.column } }
+        self.rowCount = cells.map { $0.row + $0.rowSpan }.max() ?? 0
+        self.columnCount = cells.map { $0.column + $0.columnSpan }.max() ?? 0
     }
 }
 

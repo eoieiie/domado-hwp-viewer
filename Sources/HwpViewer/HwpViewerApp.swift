@@ -288,25 +288,27 @@ struct DropPrompt: View {
 
 
 /// Document body: loose paragraphs and reconstructed tables, in order.
+///
+/// Every width here is a constant. An earlier version read the container width
+/// with a GeometryReader and sized columns from it, which fed the content size
+/// back into the geometry that produced it — layout never settled, and memory
+/// climbed past a gigabyte. Nothing in this view may depend on measured geometry.
 struct BlocksView: View {
     let blocks: [Block]
 
     var body: some View {
-        GeometryReader { geo in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                        row(for: block, width: geo.size.width - 40)
-                    }
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                    row(for: block)
                 }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding(20)
         }
     }
 
     @ViewBuilder
-    private func row(for block: Block, width: CGFloat) -> some View {
+    private func row(for block: Block) -> some View {
         switch block {
         case .paragraph(let p):
             Text(p.text)
@@ -314,7 +316,7 @@ struct BlocksView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .table(let table):
-            TableGrid(table: table, availableWidth: width)
+            TableGrid(table: table)
         }
     }
 }
@@ -327,63 +329,45 @@ struct BlocksView: View {
 /// that combination pegs the main thread.
 struct TableGrid: View {
     let table: HwpKit.Table
-    let availableWidth: CGFloat
-
-    private var columnWidth: CGFloat {
-        let columns = CGFloat(max(1, table.columnCount))
-        return max(70, (availableWidth / columns).rounded(.down))
-    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
             ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
-                HStack(alignment: .top, spacing: 0) {
+                GridRow {
                     ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                        CellView(cell: cell, width: columnWidth * CGFloat(cell.columnSpan))
+                        CellView(cell: cell)
+                            .gridCellColumns(cell.columnSpan)
                     }
                 }
             }
         }
-        .overlay(RoundedRectangle(cornerRadius: 3).stroke(.separator, lineWidth: 1))
+        .overlay(Rectangle().stroke(.separator, lineWidth: 1))
     }
 }
 
 struct CellView: View {
     let cell: TableCell
-    let width: CGFloat
 
-    /// A 2,000-character cell is prose, not tabular data. Collapsing it by default
-    /// keeps text layout cheap; the reader can expand what they actually need.
-    private static let collapseThreshold = 400
+    /// Long cells are clamped by line count rather than by trimming the string:
+    /// `lineLimit` is resolved inside text layout, whereas building a shortened
+    /// copy plus an expand button added a second view per cell and made the grid
+    /// stutter. Click a cell to see all of it.
+    private static let collapsedLines = 6
 
     @State private var expanded = false
 
-    private var isLong: Bool { cell.text.count > Self.collapseThreshold }
-
-    private var shown: String {
-        if isLong && !expanded {
-            return String(cell.text.prefix(Self.collapseThreshold)) + "…"
-        }
-        return cell.text
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(shown)
-                .textSelection(.enabled)
-                .font(.callout)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(width: max(20, width - 18), alignment: .topLeading)
-            if isLong {
-                Button(expanded ? "접기" : "더 보기") { expanded.toggle() }
-                    .buttonStyle(.link)
-                    .font(.caption)
-            }
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .frame(width: width, alignment: .topLeading)
-        .background(.quaternary.opacity(0.25))
-        .border(.separator, width: 0.5)
+        Text(cell.text)
+            .font(.callout)
+            .lineLimit(expanded ? nil : Self.collapsedLines)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(.quaternary.opacity(0.22))
+            .overlay(Rectangle().stroke(.separator, lineWidth: 0.5))
+            .contentShape(Rectangle())
+            .onTapGesture { expanded.toggle() }
     }
 }
