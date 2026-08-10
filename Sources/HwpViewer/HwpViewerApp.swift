@@ -50,6 +50,7 @@ final class DocumentModel: ObservableObject {
     @Published var query = ""
     @Published var showTableIndent = true
     @Published var showTableGrid = true
+    @Published var expandCells = false
 
     static let readableTypes: [UTType] = ["hwp", "hwpx"]
         .compactMap { UTType(filenameExtension: $0) }
@@ -188,6 +189,9 @@ struct ContentView: View {
                     Toggle("표 보기", isOn: $model.showTableGrid)
                         .toggleStyle(.checkbox)
                         .disabled(!model.query.isEmpty)
+                    Toggle("긴 셀 펼치기", isOn: $model.expandCells)
+                        .toggleStyle(.checkbox)
+                        .disabled(!model.showTableGrid || !model.query.isEmpty)
                     Button("복사") { model.copyAll() }
                     Button("저장") { model.presentSavePanel() }
                 }
@@ -214,7 +218,7 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.query.isEmpty && model.showTableGrid, let doc = model.document {
-            BlocksView(blocks: doc.blocks)
+            BlocksView(blocks: doc.blocks, expandCells: model.expandCells)
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 7) {
@@ -295,10 +299,11 @@ struct DropPrompt: View {
 /// climbed past a gigabyte. Nothing in this view may depend on measured geometry.
 struct BlocksView: View {
     let blocks: [Block]
+    let expandCells: Bool
 
     var body: some View {
         ScrollView(.vertical) {
-            LazyVStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 14) {
                 ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                     row(for: block)
                 }
@@ -316,7 +321,7 @@ struct BlocksView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .table(let table):
-            TableGrid(table: table)
+            TableGrid(table: table, expanded: expandCells)
         }
     }
 }
@@ -329,13 +334,14 @@ struct BlocksView: View {
 /// that combination pegs the main thread.
 struct TableGrid: View {
     let table: HwpKit.Table
+    let expanded: Bool
 
     var body: some View {
         Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
             ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
                 GridRow {
                     ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                        CellView(cell: cell)
+                        CellView(cell: cell, expanded: expanded)
                             .gridCellColumns(cell.columnSpan)
                     }
                 }
@@ -348,26 +354,31 @@ struct TableGrid: View {
 struct CellView: View {
     let cell: TableCell
 
-    /// Long cells are clamped by line count rather than by trimming the string:
-    /// `lineLimit` is resolved inside text layout, whereas building a shortened
-    /// copy plus an expand button added a second view per cell and made the grid
-    /// stutter. Click a cell to see all of it.
+    /// Every dimension here is a concrete number.
+    ///
+    /// `maxWidth: .infinity` inside a `Grid` makes every column ask for unbounded
+    /// width, so the grid can never settle on a column layout — that is what sent
+    /// memory past a gigabyte. `textSelection` and `fixedSize` are left off too:
+    /// each adds per-cell work that a hundred-cell form multiplies.
+    static let width: CGFloat = 150
     private static let collapsedLines = 6
 
-    @State private var expanded = false
+    /// Whether long cells are shown in full. Driven from one control in the
+    /// toolbar rather than a tap handler per cell: attaching a gesture to every
+    /// cell put a hundred-odd hit-test targets under the cursor, and AppKit
+    /// walked all of them on each mouse move — the window stuttered on hover.
+    let expanded: Bool
 
     var body: some View {
         Text(cell.text)
             .font(.callout)
-            .lineLimit(expanded ? nil : Self.collapsedLines)
-            .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .lineLimit(expanded ? 40 : Self.collapsedLines)
+            .frame(width: Self.width * CGFloat(cell.columnSpan) - 18,
+                   alignment: .topLeading)
             .padding(.horizontal, 9)
             .padding(.vertical, 7)
             .background(.quaternary.opacity(0.22))
             .overlay(Rectangle().stroke(.separator, lineWidth: 0.5))
-            .contentShape(Rectangle())
-            .onTapGesture { expanded.toggle() }
+            .allowsHitTesting(false)
     }
 }
