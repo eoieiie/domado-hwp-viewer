@@ -52,6 +52,9 @@ final class DocumentModel: ObservableObject {
     @Published var showTableIndent = true
     @Published var showTableGrid = true
     @Published var expandCells = false
+    @Published var images: [HwpImage] = []
+    @Published var showImages = false
+    private var fileURL: URL?
 
     static let readableTypes: [UTType] = ["hwp", "hwpx"]
         .compactMap { UTType(filenameExtension: $0) }
@@ -77,10 +80,15 @@ final class DocumentModel: ObservableObject {
         do {
             document = try HwpDocument(url: url)
             errorMessage = nil
+            // Only the compressed bytes are held; nothing is decoded until the
+            // image panel asks for a thumbnail.
+            images = (try? HwpDocument.images(at: url)) ?? []
         } catch {
             document = nil
             errorMessage = error.localizedDescription
+            images = []
         }
+        fileURL = url
         fileName = url.lastPathComponent
         query = ""
     }
@@ -133,6 +141,9 @@ struct ContentView: View {
                 Task { @MainActor in model.load(url: url) }
             }
             return true
+        }
+        .sheet(isPresented: $model.showImages) {
+            ImagePanel(images: model.images, documentName: model.fileName)
         }
         .overlay {
             if isTargeted {
@@ -193,6 +204,13 @@ struct ContentView: View {
                     Toggle("긴 셀 펼치기", isOn: $model.expandCells)
                         .toggleStyle(.checkbox)
                         .disabled(!model.showTableGrid || !model.query.isEmpty)
+                    if !model.images.isEmpty {
+                        Button {
+                            model.showImages = true
+                        } label: {
+                            Label("이미지 \(model.images.count)", systemImage: "photo")
+                        }
+                    }
                     Button("복사") { model.copyAll() }
                     Button("저장") { model.presentSavePanel() }
                 }
