@@ -3,19 +3,38 @@ import HwpKit
 import ImageIO
 import SwiftUI
 
+/// Longest edge of a generated thumbnail, in pixels.
+///
+/// A file-scope constant rather than a static on `ThumbnailStore`: that class is
+/// `@MainActor`, so its statics are too, and the decoder that reads this runs off
+/// the main actor.
+private let thumbnailMaxEdge = 220
+
 /// Thumbnails for embedded images.
 ///
 /// Decoding is done one image at a time and the full-size bitmap is dropped as
 /// soon as a thumbnail exists. A 한글 form can hold a dozen uncompressed BMPs of
 /// several megabytes each; keeping them decoded would dwarf the rest of the app.
+///
+/// **This must be owned above the sheet that displays it.** As a `@StateObject`
+/// inside `ImagePanel` it was allocated once per sheet body evaluation — four
+/// stores on a real document, each decoding all twelve images, and the one the
+/// rendered body observed was not one of the ones being filled. Thumbnails were
+/// produced correctly and never appeared.
 @MainActor
 final class ThumbnailStore: ObservableObject {
     @Published private(set) var thumbnails: [String: NSImage] = [:]
     @Published private(set) var loading = false
 
-    private static let maxEdge = 220
+    /// Which document the current thumbnails belong to, so opening a second file
+    /// does not show the first one's images.
+    private var owner: String?
 
-    func load(_ images: [HwpImage]) {
+    func load(_ images: [HwpImage], for document: String) {
+        if owner != document {
+            owner = document
+            thumbnails = [:]
+        }
         guard !loading, thumbnails.count < images.count else { return }
         loading = true
         Task.detached(priority: .utility) {
@@ -23,14 +42,20 @@ final class ThumbnailStore: ObservableObject {
                 guard await self.thumbnails[image.id] == nil else { continue }
                 guard let data = image.data() else { continue }
                 if let thumb = Self.thumbnail(from: data) {
-                    await MainActor.run { self.thumbnails[image.id] = thumb }
+                    await MainActor.run { self.store(thumb, for: image.id, from: document) }
                 } else if let fallback = NSImage(data: data) {
                     // ImageIO declined the format; hand the raw image to AppKit.
-                    await MainActor.run { self.thumbnails[image.id] = fallback }
+                    await MainActor.run { self.store(fallback, for: image.id, from: document) }
                 }
             }
             await MainActor.run { self.loading = false }
         }
+    }
+
+    /// Drops a result whose document was closed while it was decoding.
+    private func store(_ image: NSImage, for id: String, from document: String) {
+        guard owner == document else { return }
+        thumbnails[id] = image
     }
 
     /// Decodes straight to thumbnail size with ImageIO.
@@ -44,7 +69,7 @@ final class ThumbnailStore: ObservableObject {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxEdge as NSNumber,
+            kCGImageSourceThumbnailMaxPixelSize: thumbnailMaxEdge as NSNumber,
         ]
         guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else { return nil }
@@ -55,7 +80,8 @@ final class ThumbnailStore: ObservableObject {
 struct ImagePanel: View {
     let images: [HwpImage]
     let documentName: String
-    @StateObject private var store = ThumbnailStore()
+    /// Owned by `ContentView`. See the note on `ThumbnailStore`.
+    @ObservedObject var store: ThumbnailStore
     @Environment(\.dismiss) private var dismiss
 
     private var totalBytes: Int { images.reduce(0) { $0 + $1.storedByteCount } }
@@ -112,7 +138,7 @@ struct ImagePanel: View {
             }
         }
         .frame(minWidth: 560, minHeight: 420)
-        .onAppear { store.load(images) }
+        .onAppear { store.load(images, for: documentName) }
     }
 
     private func exportAll() {

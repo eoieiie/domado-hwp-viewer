@@ -124,6 +124,11 @@ struct ContentView: View {
     @ObservedObject var model: DocumentModel
     @State private var isTargeted = false
 
+    /// Held here, not in `ImagePanel`. A `@StateObject` declared inside sheet
+    /// content is re-allocated on every body evaluation, so the store the panel
+    /// rendered from was never the one being filled.
+    @StateObject private var thumbnails = ThumbnailStore()
+
     var body: some View {
         VStack(spacing: 0) {
             if model.document == nil && model.errorMessage == nil {
@@ -143,7 +148,7 @@ struct ContentView: View {
             return true
         }
         .sheet(isPresented: $model.showImages) {
-            ImagePanel(images: model.images, documentName: model.fileName)
+            ImagePanel(images: model.images, documentName: model.fileName, store: thumbnails)
         }
         .overlay {
             if isTargeted {
