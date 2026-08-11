@@ -87,6 +87,26 @@ struct ZipArchive {
         }
     }
 
+    /// Raw DEFLATE, the inverse of `inflate`.
+    ///
+    /// `COMPRESSION_ZLIB` in Apple's compression library is headerless DEFLATE,
+    /// which is exactly what both a .hwp section stream and a zip member hold.
+    static func deflate(_ input: Data) -> Data? {
+        // Incompressible input grows slightly; a stored-block DEFLATE stream adds
+        // five bytes per 64KB. This bound covers that with room to spare.
+        let capacity = input.count + input.count / 64 + 1024
+        var output = Data(count: capacity)
+        let written = output.withUnsafeMutableBytes { dst -> Int in
+            input.withUnsafeBytes { src -> Int in
+                guard let d = dst.bindMemory(to: UInt8.self).baseAddress,
+                      let s = src.bindMemory(to: UInt8.self).baseAddress else { return 0 }
+                return compression_encode_buffer(d, capacity, s, input.count, nil, COMPRESSION_ZLIB)
+            }
+        }
+        guard written > 0 else { return nil }
+        return output.prefix(written)
+    }
+
     static func inflate(_ input: Data, expected: Int) -> Data? {
         var capacity = max(expected, 64 * 1024)
         for _ in 0..<6 {

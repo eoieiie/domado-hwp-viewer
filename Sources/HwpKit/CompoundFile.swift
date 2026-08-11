@@ -15,16 +15,25 @@ struct CompoundFile {
         let type: UInt8      // 1 = storage, 2 = stream, 5 = root
         let start: UInt32
         let size: UInt64
+        /// Position in the directory, which is what locates this entry's own
+        /// bytes in the file when the size field has to be rewritten.
+        let index: Int
     }
 
     private let data: Data
-    private let sectorSize: Int
+    let sectorSize: Int
     private let miniSectorSize: Int
     private let miniCutoff: UInt32
     private var fat: [UInt32] = []
     private var miniFat: [UInt32] = []
     private var miniStream = Data()
     private(set) var entries: [Entry] = []
+    /// Sectors holding the directory, in chain order. Needed to find the file
+    /// offset of an entry so its recorded size can be updated in place.
+    private var directorySectors: [UInt32] = []
+    /// Sectors holding the allocation table itself, in order, so a writer can
+    /// find and rewrite the entry for any given sector.
+    private var fatSectors: [UInt32] = []
 
     init(data: Data) throws {
         guard data.count > 512, Array(data.prefix(8)) == Self.signature else {
@@ -55,6 +64,7 @@ struct CompoundFile {
         }
 
         for s in difat.prefix(fatCount) where s != Self.freeSector && s != Self.endOfChain {
+            fatSectors.append(s)
             let raw = self.sector(s)
             fat.append(contentsOf: (0..<(sectorSize / 4)).map { raw.u32(at: $0 * 4) })
         }
@@ -102,12 +112,13 @@ struct CompoundFile {
         return out.prefix(size)
     }
 
-    private func readDirectory(start: UInt32) -> [Entry] {
+    private mutating func readDirectory(start: UInt32) -> [Entry] {
         // The directory is itself a stream; walk its sector chain directly since
         // `chain` needs a size we do not know yet.
         var raw = Data()
         var s = start
         while s != Self.endOfChain, s != Self.freeSector, Int(s) < fat.count {
+            directorySectors.append(s)
             raw.append(sector(s))
             s = fat[Int(s)]
         }
@@ -121,7 +132,8 @@ struct CompoundFile {
             result.append(Entry(name: name,
                                 type: e[e.startIndex + 0x42],
                                 start: e.u32(at: 0x74),
-                                size: e.u64(at: 0x78)))
+                                size: e.u64(at: 0x78),
+                                index: i))
         }
         return result
     }
@@ -135,6 +147,18 @@ struct CompoundFile {
     }
 
     var streamNames: [String] { entries.filter { $0.type == 2 }.map(\.name) }
+
+    // MARK: - For the writer
+
+    /// The container's own bytes, so an edit can be expressed as a copy of the
+    /// original with a few ranges replaced. See `CompoundFileWriter`.
+    var rawBytes: Data { data }
+    var fatTable: [UInt32] { fat }
+    var directoryChain: [UInt32] { directorySectors }
+    var allocationTableSectors: [UInt32] { fatSectors }
+    var miniStreamCutoff: UInt32 { miniCutoff }
+    static var chainEnd: UInt32 { endOfChain }
+    static var unusedSector: UInt32 { freeSector }
 }
 
 // MARK: - Little-endian reads

@@ -94,42 +94,22 @@ public struct HwpDocument {
 
     private static func binaryRecords(data: Data) throws
         -> [(tag: UInt16, level: Int, payload: Data)] {
-        let cf = try CompoundFile(data: data)
-        guard let header = cf.read("FileHeader"), header.count >= 40 else {
-            throw HwpError.noFileHeader
-        }
-        let compressed = header.u32(at: 36) & 1 == 1
-
         var result: [(tag: UInt16, level: Int, payload: Data)] = []
-        let sections = cf.streamNames
-            .filter { $0.hasPrefix("Section") }
-            .sorted { (Int($0.dropFirst(7)) ?? 0) < (Int($1.dropFirst(7)) ?? 0) }
-
-        for name in sections {
-            guard var raw = cf.read(name) else { continue }
-            if compressed {
-                guard let inflated = inflate(raw) else { throw HwpError.decompressionFailed }
-                raw = inflated
-            }
-            for record in RecordSequence(data: raw) {
+        for section in try BodyStreams(data: data).inflated {
+            for record in RecordSequence(data: section) {
                 result.append((tag: record.rawTag, level: Int(record.level), payload: record.payload))
             }
         }
         return result
     }
 
-    /// HWP stores sections as raw DEFLATE, which is what COMPRESSION_ZLIB expects.
-    private static func inflate(_ input: Data) -> Data? {
-        ZipArchive.inflate(input, expected: input.count * 8)
-    }
-
     // MARK: - Paragraph text
 
     /// Control characters occupying 8 UTF-16 units (char + payload + char) rather
     /// than one. Miscounting these shifts every following glyph.
-    private static let wideControls: Set<UInt16> = [1, 2, 3, 4, 5, 6, 7, 8, 11, 12,
-                                                    14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
-    private static let skipControls: Set<UInt16> = [0, 10, 13, 24, 25, 26, 27, 28, 29, 30, 31]
+    static let wideControls: Set<UInt16> = [1, 2, 3, 4, 5, 6, 7, 8, 11, 12,
+                                            14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    static let skipControls: Set<UInt16> = [0, 10, 13, 24, 25, 26, 27, 28, 29, 30, 31]
 
     static func decodeParagraph(_ buffer: Data) -> String {
         var scalars = String.UnicodeScalarView()
@@ -157,6 +137,13 @@ struct HwpRecord {
     let rawTag: UInt16
     let level: UInt16
     let payload: Data
+    /// Offset of this record's header within the section, and of its payload.
+    /// The editor rewrites records by splicing these ranges, which leaves every
+    /// byte it did not mean to touch exactly as the original had it.
+    let start: Int
+    let payloadStart: Int
+
+    var end: Int { payloadStart + payload.count }
 }
 
 /// HWP body streams are a flat sequence of records with a packed 32-bit header:
@@ -170,6 +157,7 @@ struct RecordSequence: Sequence, IteratorProtocol {
 
     mutating func next() -> HwpRecord? {
         guard offset + 4 <= data.count else { return nil }
+        let start = offset
         let header = data.u32(at: offset)
         let rawTag = UInt16(header & 0x3FF)
         let level = UInt16((header >> 10) & 0x3FF)
@@ -182,7 +170,9 @@ struct RecordSequence: Sequence, IteratorProtocol {
         }
         guard offset + size <= data.count else { return nil }
         let payload = data.subdata(in: (data.startIndex + offset)..<(data.startIndex + offset + size))
+        let payloadStart = offset
         offset += size
-        return HwpRecord(rawTag: rawTag, level: level, payload: payload)
+        return HwpRecord(rawTag: rawTag, level: level, payload: payload,
+                         start: start, payloadStart: payloadStart)
     }
 }
