@@ -43,13 +43,28 @@ private struct ImporterPlugin {
 
 /// Spotlight indexes what we put in `attributes`. Only a handful of keys matter:
 /// the text content (what full-text search matches on) and a few display fields.
+private func debugLog(_ s: String) {
+    guard ProcessInfo.processInfo.environment["HWP_IMPORTER_DEBUG"] != nil
+            || FileManager.default.fileExists(atPath: "/tmp/hwpimporter.debug") else { return }
+    if let h = FileHandle(forWritingAtPath: "/tmp/hwpimporter.log") {
+        h.seekToEndOfFile(); h.write(Data((s + "\n").utf8)); h.closeFile()
+    } else {
+        try? (s + "\n").write(toFile: "/tmp/hwpimporter.log", atomically: true, encoding: .utf8)
+    }
+}
+
 private func importData(file path: String, into attributes: CFMutableDictionary) -> Bool {
-    guard let document = try? HwpDocument(url: URL(fileURLWithPath: path)) else { return false }
+    debugLog("호출됨: \(path)")
+    guard let document = try? HwpDocument(url: URL(fileURLWithPath: path)) else {
+        debugLog("  파싱 실패"); return false
+    }
+    debugLog("  파싱 성공: \(document.blocks.count)블록")
 
     let dict = attributes as NSMutableDictionary
     let text = document.text
     guard !text.isEmpty else { return false }
 
+    debugLog("  본문 \(text.count)자 기록")
     dict[kMDItemTextContent as String] = text
     dict[kMDItemNumberOfPages as String] = document.blocks.count
     dict[kMDItemKind as String] = document.format == .owpml ? "한글 문서 (hwpx)" : "한글 문서 (hwp)"
