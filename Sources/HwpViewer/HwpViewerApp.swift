@@ -22,6 +22,7 @@ struct HwpViewerApp: App {
         WindowGroup {
             ContentView(model: model)
                 .frame(minWidth: 640, minHeight: 480)
+                .navigationTitle(model.fileName.isEmpty ? "도마도 HWP 뷰어" : model.fileName)
         }
         .commands {
             CommandGroup(replacing: .newItem) {
@@ -336,12 +337,41 @@ struct TableGrid: View {
     let table: HwpKit.Table
     let expanded: Bool
 
+    /// Target width for a whole table. Columns split this, so a one-column table
+    /// gets the full width instead of the 150pt a fixed per-column size gave it.
+    private static let tableWidth: CGFloat = 860
+
+    /// Beyond this many columns a grid is unreadable anyway, and laying one out
+    /// is what blanked the window on a real 사업계획서 양식. Fall back to text.
+    private static let maxRenderableColumns = 24
+
+    private var columnWidth: CGFloat {
+        max(110, Self.tableWidth / CGFloat(max(1, table.columnCount)))
+    }
+
     var body: some View {
+        if table.columnCount > Self.maxRenderableColumns {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
+                    Text(row.map(\.text).joined(separator: "  |  "))
+                        .font(.callout)
+                        .lineLimit(expanded ? nil : 4)
+                        .frame(width: Self.tableWidth, alignment: .topLeading)
+                }
+            }
+            .padding(8)
+            .overlay(Rectangle().stroke(.separator, lineWidth: 1))
+        } else {
+            grid
+        }
+    }
+
+    private var grid: some View {
         Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
             ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
                 GridRow {
                     ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                        CellView(cell: cell, expanded: expanded)
+                        CellView(cell: cell, columnWidth: columnWidth, expanded: expanded)
                             .gridCellColumns(cell.columnSpan)
                     }
                 }
@@ -360,8 +390,8 @@ struct CellView: View {
     /// width, so the grid can never settle on a column layout — that is what sent
     /// memory past a gigabyte. `textSelection` and `fixedSize` are left off too:
     /// each adds per-cell work that a hundred-cell form multiplies.
-    static let width: CGFloat = 150
     private static let collapsedLines = 6
+    let columnWidth: CGFloat
 
     /// Whether long cells are shown in full. Driven from one control in the
     /// toolbar rather than a tap handler per cell: attaching a gesture to every
@@ -372,8 +402,8 @@ struct CellView: View {
     var body: some View {
         Text(cell.text)
             .font(.callout)
-            .lineLimit(expanded ? 40 : Self.collapsedLines)
-            .frame(width: Self.width * CGFloat(cell.columnSpan) - 18,
+            .lineLimit(expanded ? nil : Self.collapsedLines)
+            .frame(width: columnWidth * CGFloat(cell.columnSpan) - 18,
                    alignment: .topLeading)
             .padding(.horizontal, 9)
             .padding(.vertical, 7)

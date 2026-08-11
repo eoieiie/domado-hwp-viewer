@@ -67,7 +67,10 @@ struct TableBuilder {
     private var blocks: [Block] = []
     private var tableSeq = 0
 
-    static let tableControlID: UInt32 = 0x7462_6C20   // 'tbl ' little-endian in file order
+    /// Plausibility bounds for a cell address. A 한글 table cannot realistically
+    /// exceed these, and anything beyond them is a misread of a non-cell record.
+    static let maxColumns = 128
+    static let maxRows = 4096
 
     static func build(records: [(tag: UInt16, level: Int, payload: Data)],
                       decode: (Data) -> String) -> [Block] {
@@ -94,13 +97,24 @@ struct TableBuilder {
             // Only the ones sitting directly under the table control are cells.
             guard r.payload.count >= 16,
                   r.level == stack[stack.count - 1].controlLevel + 1 else { break }
+
+            let col = Int(r.payload.u16(at: 8))
+            let row = Int(r.payload.u16(at: 10))
+            let colSpan = Int(r.payload.u16(at: 12))
+            let rowSpan = Int(r.payload.u16(at: 14))
+
+            // Some list headers that pass the level check still are not cells, and
+            // reading their bytes as coordinates yields values like column 8506.
+            // A grid that wide never renders. Treat implausible addresses as "not
+            // a cell" and let the text fall into the cell already open, so nothing
+            // is dropped.
+            guard col < Self.maxColumns, row < Self.maxRows,
+                  colSpan >= 1, colSpan <= Self.maxColumns,
+                  rowSpan >= 1, rowSpan <= Self.maxRows else { break }
+
             flushCell()
-            stack[stack.count - 1].current = (
-                row: Int(r.payload.u16(at: 10)),
-                col: Int(r.payload.u16(at: 8)),
-                rowSpan: max(1, Int(r.payload.u16(at: 14))),
-                colSpan: max(1, Int(r.payload.u16(at: 12)))
-            )
+            stack[stack.count - 1].current = (row: row, col: col,
+                                              rowSpan: rowSpan, colSpan: colSpan)
 
         case 67:                                     // PARA_TEXT
             let line = decode(r.payload).trimmingCharacters(in: .whitespacesAndNewlines)
