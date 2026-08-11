@@ -11,6 +11,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// Opens a document at launch so a change can be checked without clicking
+    /// through the UI first. `HWP_DEBUG_PANEL` may be `images` or `edit`.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let environment = ProcessInfo.processInfo.environment
+        guard let path = environment["HWP_DEBUG_OPEN"] else { return }
+        Task { @MainActor in
+            let model = DocumentModel.shared
+            model.load(url: URL(fileURLWithPath: path))
+            model.query = environment["HWP_DEBUG_QUERY"] ?? ""
+            switch environment["HWP_DEBUG_PANEL"] {
+            case "images": model.showImages = true
+            case "edit": model.showEditor = true
+            default: break
+            }
+        }
+    }
 }
 
 @main
@@ -54,7 +71,12 @@ final class DocumentModel: ObservableObject {
     @Published var expandCells = false
     @Published var images: [HwpImage] = []
     @Published var showImages = false
-    private var fileURL: URL?
+    @Published var showEditor = false
+    private(set) var fileURL: URL?
+
+    /// Text replacement rewrites the record stream, which only exists in the
+    /// binary format.
+    var canEdit: Bool { fileURL != nil && document?.format == .binary }
 
     static let readableTypes: [UTType] = ["hwp", "hwpx"]
         .compactMap { UTType(filenameExtension: $0) }
@@ -128,6 +150,7 @@ struct ContentView: View {
     /// content is re-allocated on every body evaluation, so the store the panel
     /// rendered from was never the one being filled.
     @StateObject private var thumbnails = ThumbnailStore()
+    @StateObject private var editPreview = EditPreview()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -149,6 +172,10 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.showImages) {
             ImagePanel(images: model.images, documentName: model.fileName, store: thumbnails)
+        }
+        .sheet(isPresented: $model.showEditor) {
+            EditPanel(sourceURL: model.fileURL, documentName: model.fileName,
+                      seed: model.query, preview: editPreview)
         }
         .overlay {
             if isTargeted {
@@ -214,6 +241,13 @@ struct ContentView: View {
                             model.showImages = true
                         } label: {
                             Label("이미지 \(model.images.count)", systemImage: "photo")
+                        }
+                    }
+                    if model.canEdit {
+                        Button {
+                            model.showEditor = true
+                        } label: {
+                            Label("바꾸기", systemImage: "character.cursor.ibeam")
                         }
                     }
                     Button("복사") { model.copyAll() }
