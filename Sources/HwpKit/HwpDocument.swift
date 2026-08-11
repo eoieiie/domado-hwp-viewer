@@ -39,7 +39,9 @@ public enum HwpFormat: String {
 
 /// A parsed 한글 document, in either the binary `.hwp` or the newer `.hwpx` form.
 public struct HwpDocument {
-    public let paragraphs: [Paragraph]
+    /// Derived from `blocks` on demand. Storing it alongside doubled the text
+    /// held in memory for no gain — callers that want a flat list are rare.
+    public var paragraphs: [Paragraph] { Self.flatten(blocks) }
     /// Body content in document order, with tables kept as grids.
     public let blocks: [Block]
     public let format: HwpFormat
@@ -65,13 +67,11 @@ public struct HwpDocument {
         // Dispatch on the container signature rather than the file extension —
         // people rename these files constantly.
         if data.count >= 4, data[data.startIndex] == 0x50, data[data.startIndex + 1] == 0x4B {
-            paragraphs = try HwpxParser.parse(data: data)
-            blocks = paragraphs.map { Block.paragraph($0) }
+            blocks = try HwpxParser.parse(data: data).map { Block.paragraph($0) }
             format = .owpml
         } else {
             let records = try Self.binaryRecords(data: data)
             blocks = TableBuilder.build(records: records, decode: Self.decodeParagraph)
-            paragraphs = Self.flatten(blocks)
             format = .binary
         }
     }
@@ -86,7 +86,7 @@ public struct HwpDocument {
                 return [p]
             case .table(let t):
                 return t.rows.flatMap { row in
-                    row.flatMap { cell in cell.lines.map { Paragraph(text: $0, level: 1) } }
+                    row.map { Paragraph(text: $0.text, level: 1) }
                 }
             }
         }

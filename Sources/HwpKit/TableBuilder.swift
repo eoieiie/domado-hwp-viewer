@@ -6,10 +6,20 @@ public struct TableCell: Hashable, Identifiable {
     public let column: Int
     public let rowSpan: Int
     public let columnSpan: Int
-    public let lines: [String]
+
+    /// Joined once at parse time. As a computed property this rebuilt the string
+    /// on every access, and SwiftUI reads it on each layout pass.
+    public let text: String
 
     public var id: Int { row << 20 | column }
-    public var text: String { lines.joined(separator: "\n") }
+
+    init(row: Int, column: Int, rowSpan: Int, columnSpan: Int, lines: [String]) {
+        self.row = row
+        self.column = column
+        self.rowSpan = rowSpan
+        self.columnSpan = columnSpan
+        self.text = lines.joined(separator: "\n")
+    }
 }
 
 public struct Table: Hashable, Identifiable {

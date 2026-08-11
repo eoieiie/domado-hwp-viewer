@@ -303,14 +303,18 @@ struct BlocksView: View {
     let expandCells: Bool
 
     var body: some View {
-        ScrollView(.vertical) {
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                    row(for: block)
-                }
-            }
-            .padding(20)
+        // A List is backed by NSTableView and only materialises the rows on
+        // screen. ScrollView + VStack builds every block up front (334MB on a
+        // 590-paragraph form); LazyVStack virtualises but re-measures the grids
+        // continuously and pegged the CPU. List is the container that does both.
+        List(Array(blocks.enumerated()), id: \.offset) { _, block in
+            row(for: block)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                .listRowBackground(Color.clear)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
     }
 
     @ViewBuilder
@@ -367,7 +371,7 @@ struct TableGrid: View {
     }
 
     private var grid: some View {
-        Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+        Grid(alignment: .topLeading, horizontalSpacing: 1, verticalSpacing: 1) {
             ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
                 GridRow {
                     ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
@@ -377,7 +381,8 @@ struct TableGrid: View {
                 }
             }
         }
-        .overlay(Rectangle().stroke(.separator, lineWidth: 1))
+        .padding(1)
+        .background(Color(nsColor: .separatorColor))
     }
 }
 
@@ -407,8 +412,10 @@ struct CellView: View {
                    alignment: .topLeading)
             .padding(.horizontal, 9)
             .padding(.vertical, 7)
-            .background(.quaternary.opacity(0.22))
-            .overlay(Rectangle().stroke(.separator, lineWidth: 0.5))
+            // Grid lines come from the 1pt gaps between cells showing the grid's
+            // background, not from a stroke on each cell: 420 stroke shapes were
+            // 420 extra views to lay out and keep alive.
+            .background(Color(nsColor: .textBackgroundColor))
             .allowsHitTesting(false)
     }
 }
