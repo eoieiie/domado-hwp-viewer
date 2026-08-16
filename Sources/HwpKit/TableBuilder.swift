@@ -22,6 +22,23 @@ public struct TableCell: Hashable, Identifiable {
     }
 }
 
+/// One position in a row, in the order it has to be drawn.
+///
+/// A grid row is not just its cells. A cell merged downward occupies a column in
+/// the rows beneath it without appearing in them, and a form that leaves a corner
+/// empty has no cell there at all. Drawing only the cells that start in a row
+/// slides everything after the gap one column to the left — which is exactly what
+/// happened to every 신청서 with a merged header column down its left edge.
+public enum Slot: Hashable {
+    /// A cell that starts here.
+    case cell(TableCell)
+    /// Covered by a cell merged downward from above. Carries that cell's width so
+    /// the column keeps its place.
+    case merged(columns: Int)
+    /// No cell defined here; the table is not rectangular.
+    case empty
+}
+
 public struct Table: Hashable, Identifiable {
     public let cells: [TableCell]
     public let id: Int
@@ -32,8 +49,19 @@ public struct Table: Hashable, Identifiable {
     /// layout pass, and regrouping a hundred cells per pass is what made window
     /// resizing crawl.
     public let rows: [[TableCell]]
+
+    /// Every row as a complete left-to-right sequence of slots, so column `n` of
+    /// one row lines up with column `n` of the next. Computed once, for the same
+    /// reason `rows` is.
+    public let layout: [[Slot]]
     public let rowCount: Int
     public let columnCount: Int
+
+    /// Above this many grid positions the occupancy pass is skipped and `layout`
+    /// falls back to the cells alone. A misread address can claim a 128×4096
+    /// grid, and filling half a million slots to lay out one broken table is a
+    /// worse failure than the misalignment it would fix.
+    private static let maxSlots = 20_000
 
     init(cells: [TableCell], id: Int) {
         self.cells = cells
@@ -41,8 +69,66 @@ public struct Table: Hashable, Identifiable {
         self.rows = Dictionary(grouping: cells, by: \.row)
             .sorted { $0.key < $1.key }
             .map { $0.value.sorted { $0.column < $1.column } }
-        self.rowCount = cells.map { $0.row + $0.rowSpan }.max() ?? 0
-        self.columnCount = cells.map { $0.column + $0.columnSpan }.max() ?? 0
+        let rowCount = cells.map { $0.row + $0.rowSpan }.max() ?? 0
+        let columnCount = cells.map { $0.column + $0.columnSpan }.max() ?? 0
+        self.rowCount = rowCount
+        self.columnCount = columnCount
+        self.layout = Self.occupancy(cells: cells, rows: rowCount, columns: columnCount)
+            ?? rows.map { $0.map(Slot.cell) }
+    }
+
+    /// Walks the grid position by position, so a row's slots come out in the
+    /// order they occupy columns rather than in the order cells were parsed.
+    private static func occupancy(cells: [TableCell], rows: Int,
+                                  columns: Int) -> [[Slot]]? {
+        guard rows > 0, columns > 0, rows * columns <= maxSlots else { return nil }
+
+        /// What starts at each position, and which positions are already taken by
+        /// a cell that starts elsewhere.
+        var starts = [TableCell?](repeating: nil, count: rows * columns)
+        // Column of the cell occupying each position, or -1 for nothing.
+        var takenBy = [Int](repeating: -1, count: rows * columns)
+        for cell in cells {
+            guard cell.row < rows, cell.column < columns else { continue }
+            starts[cell.row * columns + cell.column] = cell
+            for r in cell.row ..< min(rows, cell.row + cell.rowSpan) {
+                for c in cell.column ..< min(columns, cell.column + cell.columnSpan) {
+                    takenBy[r * columns + c] = cell.column
+                }
+            }
+        }
+
+        var out: [[Slot]] = []
+        out.reserveCapacity(rows)
+        for r in 0 ..< rows {
+            var line: [Slot] = []
+            var c = 0
+            while c < columns {
+                let i = r * columns + c
+                if let cell = starts[i] {
+                    line.append(.cell(cell))
+                    c += max(1, cell.columnSpan)
+                } else if takenBy[i] >= 0 {
+                    // Covered from above. Advance past the whole width of the
+                    // cell doing the covering so one placeholder stands in for it.
+                    let owner = takenBy[i]
+                    var width = 0
+                    while c + width < columns, takenBy[r * columns + c + width] == owner {
+                        width += 1
+                    }
+                    line.append(.merged(columns: width))
+                    c += width
+                } else {
+                    line.append(.empty)
+                    c += 1
+                }
+            }
+            out.append(line)
+        }
+        // Trailing rows can be entirely empty when a span overshoots the real
+        // grid; they would draw as blank stripes.
+        while let last = out.last, last.allSatisfy({ $0 == .empty }) { out.removeLast() }
+        return out
     }
 }
 

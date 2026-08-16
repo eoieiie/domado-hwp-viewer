@@ -429,17 +429,48 @@ struct TableGrid: View {
 
     private var grid: some View {
         Grid(alignment: .topLeading, horizontalSpacing: 1, verticalSpacing: 1) {
-            ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
+            // `table.layout` rather than `table.rows`: a row has to be drawn as
+            // every column position it occupies, not just the cells that begin in
+            // it, or the rows under a merged cell shift left.
+            ForEach(Array(table.layout.enumerated()), id: \.offset) { _, row in
                 GridRow {
-                    ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                        CellView(cell: cell, columnWidth: columnWidth, expanded: expanded)
-                            .gridCellColumns(cell.columnSpan)
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, slot in
+                        switch slot {
+                        case .cell(let cell):
+                            CellView(cell: cell, columnWidth: columnWidth, expanded: expanded)
+                                .gridCellColumns(cell.columnSpan)
+                        case .merged(let columns):
+                            MergedSlotView(columnWidth: columnWidth, columns: columns)
+                                .gridCellColumns(columns)
+                        case .empty:
+                            MergedSlotView(columnWidth: columnWidth, columns: 1)
+                        }
                     }
                 }
             }
         }
         .padding(1)
         .background(Color(nsColor: .separatorColor))
+    }
+}
+
+/// The continuation of a cell merged downward, and the filler for a position no
+/// cell covers.
+///
+/// `gridCellUnsizedAxes(.vertical)` is what makes this usable. A `Color` stretches
+/// to any height it is offered, so a row containing one takes every spare point
+/// the grid has — the row grew to twice its text height and the cells beside it,
+/// which are only as tall as their text, left a grey band underneath. Telling the
+/// grid to leave this view out of the row's height calculation fixes that while
+/// the fill still covers whatever height the row settles on.
+struct MergedSlotView: View {
+    let columnWidth: CGFloat
+    let columns: Int
+
+    var body: some View {
+        Color(nsColor: .textBackgroundColor)
+            .frame(width: columnWidth * CGFloat(columns))
+            .gridCellUnsizedAxes(.vertical)
     }
 }
 

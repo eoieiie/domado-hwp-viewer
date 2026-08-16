@@ -125,13 +125,23 @@ do {
                 print(p.text)
             case .table(let t):
                 print("┌─ 표 \(t.rowCount)행 × \(t.columnCount)열 ─────")
-                for row in t.rows {
-                    let cells = row.map { c -> String in
-                        let span = (c.rowSpan > 1 || c.columnSpan > 1)
-                            ? "(\(c.columnSpan)×\(c.rowSpan))" : ""
-                        return c.text.replacingOccurrences(of: "\n", with: " ") + span
+                // Printed from `layout`, so a column that is only occupied by a
+                // downward merge still takes its place on the line. Reading the
+                // cells alone hid a real misalignment for months.
+                for row in t.layout {
+                    let slots = row.map { slot -> String in
+                        switch slot {
+                        case .cell(let c):
+                            let span = (c.rowSpan > 1 || c.columnSpan > 1)
+                                ? "(\(c.columnSpan)×\(c.rowSpan))" : ""
+                            return c.text.replacingOccurrences(of: "\n", with: " ") + span
+                        case .merged:
+                            return "↑"
+                        case .empty:
+                            return ""
+                        }
                     }
-                    print("│ " + cells.joined(separator: " | "))
+                    print("│ " + slots.joined(separator: " | "))
                 }
                 print("└──────────")
             }
