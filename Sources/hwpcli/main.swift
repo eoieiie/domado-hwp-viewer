@@ -15,6 +15,14 @@ let listImages = args.contains("-g") || args.contains("--images")
 let dumpRecords = args.contains("-r") || args.contains("--records")
 let listZip = args.contains("-z") || args.contains("--zip")
 
+/// `-c 만들파일.zip` — 뒤에 오는 경로들을 압축한다. 이름은 UTF-8·결합형으로 쓴다.
+var createZip: String?
+if let i = args.firstIndex(where: { $0 == "-c" || $0 == "--create" }) {
+    guard i + 1 < args.count else { fail("-c 뒤에 만들 zip 이름이 필요합니다") }
+    createZip = args[i + 1]
+    args.removeSubrange(i...(i + 1))
+}
+
 /// `-x 대상폴더` — 압축 풀기. 이름이 CP949면 고쳐서 푼다.
 var extractTo: String?
 if let i = args.firstIndex(where: { $0 == "-x" || $0 == "--extract" }) {
@@ -35,6 +43,52 @@ while let i = args.firstIndex(where: { $0 == "-e" || $0 == "--edit" }) {
 }
 args.removeAll { $0.hasPrefix("-") }
 
+// MARK: - Create a zip
+
+if let target = createZip {
+    let sources = args.filter { !$0.hasPrefix("-") }
+    guard !sources.isEmpty else { fail("압축할 파일이나 폴더를 지정하세요") }
+    let out = URL(fileURLWithPath: target)
+    guard !FileManager.default.fileExists(atPath: out.path) else {
+        fail("\(out.lastPathComponent)이(가) 이미 있습니다.")
+    }
+
+    var files: [ZipWriter.File] = []
+    let fm = FileManager.default
+    for source in sources {
+        let url = URL(fileURLWithPath: source)
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            fail("없는 경로입니다: \(source)")
+        }
+        if isDirectory.boolValue {
+            let base = url.lastPathComponent
+            guard let walker = fm.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey])
+            else { continue }
+            for case let child as URL in walker {
+                guard (try? child.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
+                      let bytes = try? Data(contentsOf: child) else { continue }
+                let relative = child.path.dropFirst(url.path.count).drop(while: { $0 == "/" })
+                files.append(.init(name: "\(base)/\(relative)", data: bytes))
+            }
+        } else {
+            guard let bytes = try? Data(contentsOf: url) else { fail("읽지 못했습니다: \(source)") }
+            files.append(.init(name: url.lastPathComponent, data: bytes))
+        }
+    }
+    guard !files.isEmpty else { fail("압축할 파일이 없습니다.") }
+
+    do {
+        try ZipWriter.archive(files).write(to: out, options: .withoutOverwriting)
+    } catch {
+        fail("저장 실패: \(error.localizedDescription)")
+    }
+    let size = (try? Data(contentsOf: out).count) ?? 0
+    print("\(files.count)개를 \(out.lastPathComponent)로 묶었습니다 "
+          + "(\(size / 1024)KB). 이름은 UTF-8·결합형이라 윈도우에서 안 깨집니다.")
+    exit(0)
+}
+
 guard let path = args.first else {
     fail("""
     사용법: hwpcli <파일.hwp|.hwpx> [옵션]
@@ -44,6 +98,7 @@ guard let path = args.first else {
       -e 찾을말=>바꿀말   본문 치환. 원본은 건드리지 않고 _수정.hwp로 저장
       -z          zip 안 파일 목록 (윈도우가 만든 CP949 이름도 제대로 보임)
       -x 폴더      zip 풀기. 깨진 한글 이름을 고쳐서 푼다
+      -c 새.zip    파일·폴더를 압축. 윈도우에서 안 깨지는 이름으로 쓴다
     """)
 }
 let url = URL(fileURLWithPath: path)
