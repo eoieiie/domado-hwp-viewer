@@ -13,6 +13,15 @@ var args = Array(CommandLine.arguments.dropFirst())
 let showTables = args.contains("-t") || args.contains("--tables")
 let listImages = args.contains("-g") || args.contains("--images")
 let dumpRecords = args.contains("-r") || args.contains("--records")
+let listZip = args.contains("-z") || args.contains("--zip")
+
+/// `-x 대상폴더` — 압축 풀기. 이름이 CP949면 고쳐서 푼다.
+var extractTo: String?
+if let i = args.firstIndex(where: { $0 == "-x" || $0 == "--extract" }) {
+    guard i + 1 < args.count else { fail("-x 뒤에 풀어둘 폴더가 필요합니다") }
+    extractTo = args[i + 1]
+    args.removeSubrange(i...(i + 1))
+}
 
 /// `-e 찾을말=>바꿀말`, repeatable. Writes a new file and never the original.
 var changes: [HwpChange] = []
@@ -33,6 +42,8 @@ guard let path = args.first else {
       -g          이미지 목록·추출
       -r          레코드 덤프 (문단 구조 점검)
       -e 찾을말=>바꿀말   본문 치환. 원본은 건드리지 않고 _수정.hwp로 저장
+      -z          zip 안 파일 목록 (윈도우가 만든 CP949 이름도 제대로 보임)
+      -x 폴더      zip 풀기. 깨진 한글 이름을 고쳐서 푼다
     """)
 }
 let url = URL(fileURLWithPath: path)
@@ -62,6 +73,43 @@ if !changes.isEmpty {
         fail("저장 실패: \(error.localizedDescription)")
     }
     print("\(report.replacements)곳 바꿔 \(out.lastPathComponent)로 저장했습니다. 원본은 그대로입니다.")
+    exit(0)
+}
+
+// MARK: - Zip
+
+if listZip || extractTo != nil {
+    guard let data = try? Data(contentsOf: url), let zip = ZipArchive(data: data) else {
+        fail("zip으로 읽지 못했습니다: \(url.lastPathComponent)")
+    }
+    let broken = zip.entries.filter { $0.nameEncoding == .cp949 }
+
+    if let folder = extractTo {
+        let out = URL(fileURLWithPath: folder)
+        let report: ZipArchive.ExtractReport
+        do {
+            report = try zip.extract(to: out)
+        } catch {
+            fail("풀지 못했습니다: \(error.localizedDescription)")
+        }
+        for s in report.skipped { print("건너뜀: \(s.name) — \(s.reason)") }
+        print("\(report.written.count)개를 \(out.path)에 풀었습니다.")
+        if report.repairedNames {
+            print("한글 이름 \(broken.count)개를 CP949에서 고쳐서 풀었습니다.")
+        }
+        exit(0)
+    }
+
+    print("파일 \(zip.entries.count)개")
+    for e in zip.entries where !e.isDirectory {
+        let mark = e.nameEncoding == .cp949 ? "  ← CP949에서 복구" : ""
+        print(String(format: "  %9.1fKB  %@%@", Double(e.uncompressedSize) / 1024,
+                     e.name, mark))
+    }
+    if !broken.isEmpty {
+        print("\n윈도우에서 만든 압축입니다. Finder로 풀면 이 \(broken.count)개는 "
+              + "이름이 ????로 깨집니다. -x 폴더 로 풀면 제대로 나옵니다.")
+    }
     exit(0)
 }
 

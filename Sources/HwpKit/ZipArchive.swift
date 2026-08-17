@@ -6,19 +6,32 @@ import Foundation
 /// `.hwpx` is a zip package, and Foundation has no zip API. Rather than take a
 /// dependency (or shell out to `/usr/bin/unzip`) we read the central directory
 /// ourselves and reuse the same raw-DEFLATE path the classic .hwp body uses.
-struct ZipArchive {
-    struct Entry {
-        let name: String
+public struct ZipArchive {
+    /// How an entry's name was stored.
+    ///
+    /// Korean Windows tools — 알집, 탐색기 — write names in CP949 and leave the
+    /// zip's UTF-8 flag clear. macOS then reads those bytes as CP437, which is
+    /// where `과제제출.hwp` becomes `????????.hwp`.
+    public enum NameEncoding: String {
+        case utf8 = "UTF-8"
+        case cp949 = "CP949"
+    }
+
+    public struct Entry {
+        public let name: String
+        public let nameEncoding: NameEncoding
         let compressionMethod: UInt16
         let compressedSize: Int
-        let uncompressedSize: Int
+        public let uncompressedSize: Int
         let localHeaderOffset: Int
+
+        public var isDirectory: Bool { name.hasSuffix("/") }
     }
 
     private let data: Data
-    private(set) var entries: [Entry] = []
+    public private(set) var entries: [Entry] = []
 
-    init?(data: Data) {
+    public init?(data: Data) {
         guard data.count > 22 else { return nil }
         self.data = data
 
@@ -49,10 +62,11 @@ struct ZipArchive {
 
             let nameStart = data.startIndex + offset + 46
             guard nameStart + nameLen <= data.endIndex else { break }
-            let name = String(data: data.subdata(in: nameStart..<(nameStart + nameLen)),
-                              encoding: .utf8) ?? ""
+            let (name, nameEncoding) = Self.decodeName(
+                data.subdata(in: nameStart..<(nameStart + nameLen)))
 
             entries.append(Entry(name: name,
+                                 nameEncoding: nameEncoding,
                                  compressionMethod: method,
                                  compressedSize: compressed,
                                  uncompressedSize: uncompressed,
@@ -62,13 +76,39 @@ struct ZipArchive {
         guard !entries.isEmpty else { return nil }
     }
 
+    /// CP949, which is what Korean Windows writes when it does not claim UTF-8.
+    private static let cp949 = String.Encoding(rawValue:
+        CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.dosKorean.rawValue)))
+
+    /// An entry name as text, and which encoding it turned out to be.
+    ///
+    /// The archive's UTF-8 flag is not consulted. Too many tools write UTF-8 names
+    /// without setting it for the flag to decide anything, so what decodes as
+    /// valid UTF-8 is taken at face value and only bytes that cannot be UTF-8 fall
+    /// through to CP949. Korean in CP949 is almost always invalid UTF-8 — its lead
+    /// UTF-8 continuation bytes — so the two do not get confused in practice.
+    ///
+    /// The result is normalised to precomposed form. macOS writes filenames
+    /// decomposed (`한` as `ᄒ`+`ᅡ`+`ᆫ`), which survives locally and then looks
+    /// wrong everywhere else.
+    static func decodeName(_ bytes: Data) -> (String, NameEncoding) {
+        if let utf8 = String(data: bytes, encoding: .utf8) {
+            return (utf8.precomposedStringWithCanonicalMapping, .utf8)
+        }
+        if let korean = String(data: bytes, encoding: cp949) {
+            return (korean.precomposedStringWithCanonicalMapping, .cp949)
+        }
+        return (String(decoding: bytes, as: UTF8.self), .utf8)
+    }
+
     /// Decompressed contents of a named entry.
     func read(_ name: String) -> Data? {
         guard let e = entries.first(where: { $0.name == name }) else { return nil }
         return read(e)
     }
 
-    func read(_ e: Entry) -> Data? {
+    public func read(_ e: Entry) -> Data? {
         let lo = e.localHeaderOffset
         guard lo + 30 <= data.count, data.u32(at: lo) == 0x0403_4B50 else { return nil }
         let nameLen = Int(data.u16(at: lo + 26))
