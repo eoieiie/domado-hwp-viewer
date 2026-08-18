@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let path = environment["HWP_DEBUG_OPEN"] else { return }
         Task { @MainActor in
             let model = DocumentModel.shared
-            model.load(url: URL(fileURLWithPath: path))
+            model.accept(urls: [URL(fileURLWithPath: path)])
             model.query = environment["HWP_DEBUG_QUERY"] ?? ""
             switch environment["HWP_DEBUG_PANEL"] {
             case "images": model.showImages = true
@@ -45,6 +45,8 @@ struct HwpViewerApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("열기…") { model.presentOpenPanel() }
                     .keyboardShortcut("o")
+                Button("압축 만들기…") { model.presentCompressPanel() }
+                    .keyboardShortcut("k")
             }
             CommandGroup(after: .saveItem) {
                 Button("텍스트로 저장…") { model.presentSavePanel() }
@@ -74,6 +76,9 @@ final class DocumentModel: ObservableObject {
     @Published var showEditor = false
     /// Set instead of `document` when the file turns out to be a plain zip.
     @Published var archive: ArchiveContents?
+    /// Set when the drop was several files, or a folder: nothing here is a
+    /// document to read, so the useful thing to offer is packing them.
+    @Published var compress: CompressRequest?
     private(set) var fileURL: URL?
 
     /// Text replacement rewrites the record stream, which only exists in the
@@ -100,7 +105,29 @@ final class DocumentModel: ObservableObject {
         return parts.joined(separator: " · ")
     }
 
+    /// A drop of more than one item, or of a folder, is a request to pack.
+    func accept(urls: [URL]) {
+        guard let first = urls.first else { return }
+        var isDirectory: ObjCBool = false
+        _ = FileManager.default.fileExists(atPath: first.path, isDirectory: &isDirectory)
+        if urls.count > 1 || isDirectory.boolValue {
+            compress = CompressRequest(urls: urls)
+        } else {
+            load(url: first)
+        }
+    }
+
+    func presentCompressPanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = true
+        panel.prompt = "압축할 항목 선택"
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        compress = CompressRequest(urls: panel.urls)
+    }
+
     func load(url: URL) {
+        compress = nil
         do {
             document = try HwpDocument(url: url)
             archive = nil
@@ -161,7 +188,9 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let archive = model.archive {
+            if let request = model.compress {
+                CompressPanel(request: request) { model.compress = nil }
+            } else if let archive = model.archive {
                 ArchivePanel(contents: archive)
             } else if model.document == nil && model.errorMessage == nil {
                 DropPrompt(isTargeted: isTargeted)
@@ -172,10 +201,19 @@ struct ContentView: View {
             }
         }
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
-            guard let provider = providers.first else { return false }
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                Task { @MainActor in model.load(url: url) }
+            // Every provider has to be collected before deciding what the drop
+            // means: one file opens, several get packed.
+            let group = DispatchGroup()
+            var dropped: [URL?] = Array(repeating: nil, count: providers.count)
+            for (i, provider) in providers.enumerated() {
+                group.enter()
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    dropped[i] = url
+                    group.leave()
+                }
+            }
+            group.notify(queue: .main) {
+                Task { @MainActor in model.accept(urls: dropped.compactMap { $0 }) }
             }
             return true
         }

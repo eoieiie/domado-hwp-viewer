@@ -139,3 +139,37 @@ public struct ZipWriter {
         return c ^ 0xFFFF_FFFF
     }
 }
+
+extension ZipWriter {
+    /// Gathers the files to put in an archive, walking folders.
+    ///
+    /// A folder keeps its own name at the top so unpacking produces the folder
+    /// back rather than scattering its contents into the destination.
+    public static func files(at urls: [URL]) -> [File] {
+        var out: [File] = []
+        let fm = FileManager.default
+        for url in urls {
+            var isDirectory: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else { continue }
+
+            guard isDirectory.boolValue else {
+                if let bytes = try? Data(contentsOf: url) {
+                    out.append(File(name: url.lastPathComponent, data: bytes))
+                }
+                continue
+            }
+            let base = url.lastPathComponent
+            guard let walker = fm.enumerator(at: url,
+                                             includingPropertiesForKeys: [.isRegularFileKey])
+            else { continue }
+            for case let child as URL in walker {
+                guard (try? child.resourceValues(forKeys: [.isRegularFileKey]))?
+                    .isRegularFile == true,
+                      let bytes = try? Data(contentsOf: child) else { continue }
+                let relative = child.path.dropFirst(url.path.count).drop { $0 == "/" }
+                out.append(File(name: "\(base)/\(relative)", data: bytes))
+            }
+        }
+        return out
+    }
+}

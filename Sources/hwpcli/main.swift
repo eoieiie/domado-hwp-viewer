@@ -53,29 +53,7 @@ if let target = createZip {
         fail("\(out.lastPathComponent)이(가) 이미 있습니다.")
     }
 
-    var files: [ZipWriter.File] = []
-    let fm = FileManager.default
-    for source in sources {
-        let url = URL(fileURLWithPath: source)
-        var isDirectory: ObjCBool = false
-        guard fm.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-            fail("없는 경로입니다: \(source)")
-        }
-        if isDirectory.boolValue {
-            let base = url.lastPathComponent
-            guard let walker = fm.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey])
-            else { continue }
-            for case let child as URL in walker {
-                guard (try? child.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true,
-                      let bytes = try? Data(contentsOf: child) else { continue }
-                let relative = child.path.dropFirst(url.path.count).drop(while: { $0 == "/" })
-                files.append(.init(name: "\(base)/\(relative)", data: bytes))
-            }
-        } else {
-            guard let bytes = try? Data(contentsOf: url) else { fail("읽지 못했습니다: \(source)") }
-            files.append(.init(name: url.lastPathComponent, data: bytes))
-        }
-    }
+    let files = ZipWriter.files(at: sources.map { URL(fileURLWithPath: $0) })
     guard !files.isEmpty else { fail("압축할 파일이 없습니다.") }
 
     do {
