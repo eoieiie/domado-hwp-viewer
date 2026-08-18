@@ -72,13 +72,15 @@ final class DocumentModel: ObservableObject {
     @Published var images: [HwpImage] = []
     @Published var showImages = false
     @Published var showEditor = false
+    /// Set instead of `document` when the file turns out to be a plain zip.
+    @Published var archive: ArchiveContents?
     private(set) var fileURL: URL?
 
     /// Text replacement rewrites the record stream, which only exists in the
     /// binary format.
     var canEdit: Bool { fileURL != nil && document?.format == .binary }
 
-    static let readableTypes: [UTType] = ["hwp", "hwpx"]
+    static let readableTypes: [UTType] = ["hwp", "hwpx", "zip"]
         .compactMap { UTType(filenameExtension: $0) }
 
     var visible: [Paragraph] {
@@ -101,14 +103,19 @@ final class DocumentModel: ObservableObject {
     func load(url: URL) {
         do {
             document = try HwpDocument(url: url)
+            archive = nil
             errorMessage = nil
             // Only the compressed bytes are held; nothing is decoded until the
             // image panel asks for a thumbnail.
             images = (try? HwpDocument.images(at: url)) ?? []
         } catch {
             document = nil
-            errorMessage = error.localizedDescription
             images = []
+            // A .hwpx is a zip too, so this only runs once the document parsers
+            // have both declined: whatever is left is an archive to unpack, not
+            // a document to read.
+            archive = ArchiveContents(url: url)
+            errorMessage = archive == nil ? error.localizedDescription : nil
         }
         fileURL = url
         fileName = url.lastPathComponent
@@ -154,7 +161,9 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if model.document == nil && model.errorMessage == nil {
+            if let archive = model.archive {
+                ArchivePanel(contents: archive)
+            } else if model.document == nil && model.errorMessage == nil {
                 DropPrompt(isTargeted: isTargeted)
             } else {
                 header
