@@ -5,6 +5,10 @@ import UniformTypeIdentifiers
 /// Finder hands documents to the app through the AppKit delegate; SwiftUI's
 /// WindowGroup does not receive them on its own.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Held for the lifetime of the app: the services machinery keeps only an
+    /// unowned reference to whatever is registered.
+    private let windowsPack = WindowsPackService()
+
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let url = urls.first else { return }
         Task { @MainActor in DocumentModel.shared.load(url: url) }
@@ -16,12 +20,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// through the UI first. `HWP_DEBUG_PANEL` may be `images`, `edit` or
     /// `inline`.
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.servicesProvider = windowsPack
+        NSUpdateDynamicServices()
+
         let environment = ProcessInfo.processInfo.environment
         guard let path = environment["HWP_DEBUG_OPEN"] else { return }
         Task { @MainActor in
             let model = DocumentModel.shared
             model.accept(urls: [URL(fileURLWithPath: path)])
             model.query = environment["HWP_DEBUG_QUERY"] ?? ""
+            if environment["HWP_DEBUG_EXPAND"] != nil { model.expandCells = true }
             switch environment["HWP_DEBUG_PANEL"] {
             case "images": model.showImages = true
             case "edit": model.showEditor = true
@@ -95,6 +103,11 @@ final class DocumentModel: ObservableObject {
     /// Text replacement rewrites the record stream, which only exists in the
     /// binary format.
     var canEdit: Bool { fileURL != nil && document?.format == .binary }
+
+    /// Off until typing into a cell works. The staging, the targeted-replace
+    /// engine and the save path are all verified; what is not is the text field
+    /// taking focus inside the table grid.
+    static let inlineEditingReady = false
 
     static let readableTypes: [UTType] = ["hwp", "hwpx", "zip"]
         .compactMap { UTType(filenameExtension: $0) }
@@ -345,9 +358,15 @@ struct ContentView: View {
                             Label("이미지 \(model.images.count)", systemImage: "photo")
                         }
                     }
-                    if model.canEdit {
+                    // Inline editing is parked. The fields render but do not take
+                    // input reliably inside the grid, and shipping a control that
+                    // looks editable and is not is worse than not offering it.
+                    // The engine behind it stays — 바꾸기 uses the same path.
+                    if model.canEdit, DocumentModel.inlineEditingReady {
                         Toggle("편집", isOn: $model.editing)
                             .toggleStyle(.checkbox)
+                    }
+                    if model.canEdit {
                         Button {
                             model.showEditor = true
                         } label: {
@@ -655,6 +674,13 @@ struct CellView: View {
                 Text(model.text(for: cell.sources.first, original: cell.text))
                     .font(.callout)
                     .lineLimit(expanded ? nil : Self.collapsedLines)
+                    // Only while expanded. A `Text` in a fixed-width frame gets
+                    // truncated when the height it is offered is less than it
+                    // needs, so lifting the line limit alone left the ellipsis
+                    // in place. `fixedSize` makes it demand its full height —
+                    // and costs a measurement pass per cell, which is why it is
+                    // not on while reading.
+                    .fixedSize(horizontal: false, vertical: expanded)
             }
         }
         .frame(width: columnWidth * CGFloat(cell.columnSpan) - 18,
