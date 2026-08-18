@@ -13,7 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
     /// Opens a document at launch so a change can be checked without clicking
-    /// through the UI first. `HWP_DEBUG_PANEL` may be `images` or `edit`.
+    /// through the UI first. `HWP_DEBUG_PANEL` may be `images`, `edit` or
+    /// `inline`.
     func applicationDidFinishLaunching(_ notification: Notification) {
         let environment = ProcessInfo.processInfo.environment
         guard let path = environment["HWP_DEBUG_OPEN"] else { return }
@@ -24,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch environment["HWP_DEBUG_PANEL"] {
             case "images": model.showImages = true
             case "edit": model.showEditor = true
+            case "inline": model.editing = true
             default: break
             }
         }
@@ -79,6 +81,15 @@ final class DocumentModel: ObservableObject {
     /// Set when the drop was several files, or a folder: nothing here is a
     /// document to read, so the useful thing to offer is packing them.
     @Published var compress: CompressRequest?
+    /// On, cells and paragraphs become text fields.
+    ///
+    /// A mode rather than always-on because attaching an editable control to
+    /// every cell is what made a 300-table document stutter on hover once
+    /// before. While this is off the body stays as inert as it ever was.
+    @Published var editing = false
+    /// `Paragraph.source` → the text the user typed. Nothing is written until
+    /// they ask for it.
+    @Published var pendingEdits: [Int: String] = [:]
     private(set) var fileURL: URL?
 
     /// Text replacement rewrites the record stream, which only exists in the
@@ -126,8 +137,52 @@ final class DocumentModel: ObservableObject {
         compress = CompressRequest(urls: panel.urls)
     }
 
+    /// The text to show for a paragraph, which is the typed version if there is
+    /// one.
+    func text(for paragraph: Int?, original: String) -> String {
+        guard let paragraph else { return original }
+        return pendingEdits[paragraph] ?? original
+    }
+
+    func stage(_ text: String, for paragraph: Int, original: String) {
+        if text == original {
+            pendingEdits.removeValue(forKey: paragraph)
+        } else {
+            pendingEdits[paragraph] = text
+        }
+    }
+
+    func discardEdits() { pendingEdits = [:] }
+
+    /// Writes the staged edits to a new file. The original is never a candidate.
+    func saveEdits() {
+        guard let fileURL, !pendingEdits.isEmpty else { return }
+        let panel = NSSavePanel()
+        let base = fileURL.deletingPathExtension().lastPathComponent
+        panel.nameFieldStringValue = "\(base)_수정.\(fileURL.pathExtension)"
+        panel.directoryURL = fileURL.deletingLastPathComponent()
+        panel.message = "원본과 다른 이름으로 저장하세요."
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        guard destination.standardizedFileURL != fileURL.standardizedFileURL else {
+            errorMessage = "원본을 덮어쓸 수는 없습니다."
+            return
+        }
+
+        do {
+            let report = try HwpEditor.apply(paragraphs: pendingEdits, to: fileURL)
+            try report.data.write(to: destination)
+            pendingEdits = [:]
+            editing = false
+            NSWorkspace.shared.activateFileViewerSelecting([destination])
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func load(url: URL) {
         compress = nil
+        editing = false
+        pendingEdits = [:]
         do {
             document = try HwpDocument(url: url)
             archive = nil
@@ -291,11 +346,21 @@ struct ContentView: View {
                         }
                     }
                     if model.canEdit {
+                        Toggle("편집", isOn: $model.editing)
+                            .toggleStyle(.checkbox)
                         Button {
                             model.showEditor = true
                         } label: {
                             Label("바꾸기", systemImage: "character.cursor.ibeam")
                         }
+                    }
+                    if !model.pendingEdits.isEmpty {
+                        Text("\(model.pendingEdits.count)곳 고침")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Button("되돌리기") { model.discardEdits() }
+                        Button("새 파일로 저장…") { model.saveEdits() }
+                            .keyboardShortcut(.defaultAction)
                     }
                     Button("복사") { model.copyAll() }
                     Button("저장") { model.presentSavePanel() }
@@ -323,14 +388,15 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.query.isEmpty && model.showTableGrid, let doc = model.document {
-            BlocksView(blocks: doc.blocks, expandCells: model.expandCells)
+            BlocksView(blocks: doc.blocks, expandCells: model.expandCells, model: model)
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 7) {
                     ForEach(Array(model.visible.enumerated()), id: \.offset) { _, p in
                         ParagraphRow(paragraph: p,
                                      query: model.query,
-                                     indent: model.showTableIndent)
+                                     indent: model.showTableIndent,
+                                     model: model)
                     }
                 }
                 .padding(20)
@@ -343,6 +409,7 @@ struct ParagraphRow: View {
     let paragraph: Paragraph
     let query: String
     let indent: Bool
+    @ObservedObject var model: DocumentModel
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -351,9 +418,13 @@ struct ParagraphRow: View {
                     .fill(.quaternary)
                     .frame(width: 2)
             }
-            Text(highlighted)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if model.editing, let source = paragraph.source {
+                EditableText(source: source, original: paragraph.text, model: model)
+            } else {
+                Text(highlighted)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(.leading, indent ? CGFloat(paragraph.level) * 16 : 0)
     }
@@ -405,6 +476,7 @@ struct DropPrompt: View {
 struct BlocksView: View {
     let blocks: [Block]
     let expandCells: Bool
+    @ObservedObject var model: DocumentModel
 
     var body: some View {
         // A List is backed by NSTableView and only materialises the rows on
@@ -430,7 +502,7 @@ struct BlocksView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .table(let table):
-            TableGrid(table: table, expanded: expandCells)
+            TableGrid(table: table, expanded: expandCells, model: model)
         }
     }
 }
@@ -444,6 +516,7 @@ struct BlocksView: View {
 struct TableGrid: View {
     let table: HwpKit.Table
     let expanded: Bool
+    @ObservedObject var model: DocumentModel
 
     /// Target width for a whole table. Columns split this, so a one-column table
     /// gets the full width instead of the 150pt a fixed per-column size gave it.
@@ -484,7 +557,8 @@ struct TableGrid: View {
                     ForEach(Array(row.enumerated()), id: \.offset) { _, slot in
                         switch slot {
                         case .cell(let cell):
-                            CellView(cell: cell, columnWidth: columnWidth, expanded: expanded)
+                            CellView(cell: cell, columnWidth: columnWidth,
+                                     expanded: expanded, model: model)
                                 .gridCellColumns(cell.columnSpan)
                         case .merged(let columns):
                             MergedSlotView(columnWidth: columnWidth, columns: columns)
@@ -521,6 +595,32 @@ struct MergedSlotView: View {
     }
 }
 
+/// One editable paragraph.
+///
+/// Bound straight to the model's staging dictionary so a typed change survives
+/// the row being rebuilt — a `@State` copy here would be discarded whenever the
+/// list recycled the row, which for a long document is constantly.
+struct EditableText: View {
+    let source: Int
+    let original: String
+    @ObservedObject var model: DocumentModel
+
+    var body: some View {
+        TextField("", text: Binding(
+            get: { model.pendingEdits[source] ?? original },
+            set: { model.stage($0, for: source, original: original) }
+        ), axis: .vertical)
+        .textFieldStyle(.plain)
+        .font(.callout)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(model.pendingEdits[source] != nil
+                    ? Color.orange.opacity(0.18) : Color.accentColor.opacity(0.07),
+                    in: RoundedRectangle(cornerRadius: 4))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 struct CellView: View {
     let cell: TableCell
 
@@ -538,19 +638,35 @@ struct CellView: View {
     /// cell put a hundred-odd hit-test targets under the cursor, and AppKit
     /// walked all of them on each mouse move — the window stuttered on hover.
     let expanded: Bool
+    @ObservedObject var model: DocumentModel
+
+    /// Only a cell that is one record can be replaced as a single piece; a cell
+    /// holding several lines would need each line addressed separately.
+    private var editableSource: Int? {
+        guard model.editing, cell.isSingleLine else { return nil }
+        return cell.sources.first
+    }
 
     var body: some View {
-        Text(cell.text)
-            .font(.callout)
-            .lineLimit(expanded ? nil : Self.collapsedLines)
-            .frame(width: columnWidth * CGFloat(cell.columnSpan) - 18,
-                   alignment: .topLeading)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 7)
-            // Grid lines come from the 1pt gaps between cells showing the grid's
-            // background, not from a stroke on each cell: 420 stroke shapes were
-            // 420 extra views to lay out and keep alive.
-            .background(Color(nsColor: .textBackgroundColor))
-            .allowsHitTesting(false)
+        Group {
+            if let source = editableSource {
+                EditableText(source: source, original: cell.text, model: model)
+            } else {
+                Text(model.text(for: cell.sources.first, original: cell.text))
+                    .font(.callout)
+                    .lineLimit(expanded ? nil : Self.collapsedLines)
+            }
+        }
+        .frame(width: columnWidth * CGFloat(cell.columnSpan) - 18,
+               alignment: .topLeading)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        // Grid lines come from the 1pt gaps between cells showing the grid's
+        // background, not from a stroke on each cell: 420 stroke shapes were
+        // 420 extra views to lay out and keep alive.
+        .background(Color(nsColor: .textBackgroundColor))
+        // Hit testing stays off while reading. Turning it on for every cell is
+        // what put hundreds of targets under the cursor and made hover stutter.
+        .allowsHitTesting(editableSource != nil)
     }
 }
