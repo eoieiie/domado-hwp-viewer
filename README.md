@@ -34,6 +34,9 @@ swift run hwpcli 문서.hwp -t                 # 표 구조로 출력
 swift run hwpcli 문서.hwp -g                 # 이미지 목록·추출
 swift run hwpcli 문서.hwp -r                 # 문단 구조 점검 (아래 참고)
 swift run hwpcli 문서.hwp -e "옛말=>새말"     # 치환 → 문서_수정.hwp
+swift run hwpcli 압축.zip -z                 # zip 목록 (깨진 한글 이름 복구)
+swift run hwpcli 압축.zip -x 폴더            # zip 풀기
+swift run hwpcli -c 새.zip 파일들            # zip 만들기
 ```
 
 ## 구조
@@ -44,7 +47,9 @@ Sources/
 │   ├── CompoundFile.swift      OLE 컨테이너 (CFBF) 읽기
 │   ├── CompoundFileWriter.swift  스트림 제자리 교체 — 재구성하지 않는다
 │   ├── BodyStreams.swift       본문 섹션 압축 해제·재압축
-│   ├── ZipArchive.swift        최소 ZIP 리더 (.hwpx용) + DEFLATE
+│   ├── ZipArchive.swift        ZIP 리더 + DEFLATE + 파일명 인코딩 판별
+│   ├── ZipWriter.swift         ZIP 라이터 — UTF-8 플래그·결합형·CRC32
+│   ├── ZipExtract.swift        압축 풀기 (경로 탈출 차단, POSIX로 기록)
 │   ├── HwpDocument.swift       포맷 판별 + 바이너리 레코드 파싱
 │   ├── ParagraphBuffer.swift   글자 ↔ 바이트 대응 (제어문자 때문에 필요)
 │   ├── HwpEditor.swift         본문 치환 + 위치 보정 + 결과 검증
@@ -56,7 +61,9 @@ Sources/
 └── HwpViewer/                  SwiftUI 앱
     ├── HwpViewerApp.swift      창·문서 모델·본문 렌더링
     ├── ImagePanel.swift        이미지 썸네일·내보내기
-    └── EditPanel.swift         텍스트 바꾸기
+    ├── EditPanel.swift         텍스트 바꾸기
+    ├── ArchivePanel.swift      zip 목록·풀기
+    └── CompressPanel.swift     zip 만들기
 ```
 
 ## 포맷 메모
@@ -155,7 +162,8 @@ $ hwpcli 문서.hwp -r
 
 ### 안 되는 것
 
-- **`.hwpx` 수정** — 미지원(읽기는 됨). zip 쓰기가 필요하다
+- **`.hwpx` 수정** — 미지원(읽기는 됨). zip 쓰기는 됐으니 남은 건 XML 텍스트 노드 교체뿐인데,
+  테스트할 `.hwpx` 파일이 아직 없다
 - **미니스트림(4KB 미만) 수정** — 거부한다. 실제 문서의 Section0은 항상 이보다 크다
 - **`PrvText` 갱신 안 됨** — Finder 미리보기가 잠시 옛 텍스트를 보여준다.
   한글에서 저장하면 다시 만들어진다
