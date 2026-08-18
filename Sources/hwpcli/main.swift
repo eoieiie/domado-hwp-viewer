@@ -14,6 +14,22 @@ let showTables = args.contains("-t") || args.contains("--tables")
 let listImages = args.contains("-g") || args.contains("--images")
 let dumpRecords = args.contains("-r") || args.contains("--records")
 let listZip = args.contains("-z") || args.contains("--zip")
+let numbered = args.contains("-n") || args.contains("--numbered")
+
+/// `-p 12=새 내용`, repeatable. Replaces one paragraph named by its index from
+/// `-n`, which is how the app edits a single cell without touching the cells
+/// that happen to read the same.
+var paragraphEdits: [Int: String] = [:]
+while let i = args.firstIndex(where: { $0 == "-p" || $0 == "--paragraph" }) {
+    guard i + 1 < args.count else { fail("-p 뒤에 ‘번호=새 내용’이 필요합니다") }
+    let spec = args[i + 1]
+    guard let sep = spec.firstIndex(of: "="),
+          let n = Int(spec[spec.startIndex..<sep]) else {
+        fail("‘번호=새 내용’ 형식이어야 합니다: \(spec)")
+    }
+    paragraphEdits[n] = String(spec[spec.index(after: sep)...])
+    args.removeSubrange(i...(i + 1))
+}
 
 /// `-c 만들파일.zip` — 뒤에 오는 경로들을 압축한다. 이름은 UTF-8·결합형으로 쓴다.
 var createZip: String?
@@ -77,16 +93,20 @@ guard let path = args.first else {
       -z          zip 안 파일 목록 (윈도우가 만든 CP949 이름도 제대로 보임)
       -x 폴더      zip 풀기. 깨진 한글 이름을 고쳐서 푼다
       -c 새.zip    파일·폴더를 압축. 윈도우에서 안 깨지는 이름으로 쓴다
+      -n          문단마다 번호를 붙여 출력 (-p에 쓸 번호)
+      -p 번호=새 내용   그 문단만 통째로 교체 → 문서_수정.hwp
     """)
 }
 let url = URL(fileURLWithPath: path)
 
 // MARK: - Edit
 
-if !changes.isEmpty {
+if !changes.isEmpty || !paragraphEdits.isEmpty {
     let report: HwpEditReport
     do {
-        report = try HwpEditor.apply(changes, to: url)
+        report = paragraphEdits.isEmpty
+            ? try HwpEditor.apply(changes, to: url)
+            : try HwpEditor.apply(paragraphs: paragraphEdits, to: url)
     } catch {
         fail("수정하지 않았습니다: \(error.localizedDescription)")
     }
@@ -226,6 +246,15 @@ do {
                 }
                 print("└──────────")
             }
+        }
+    } else if numbered {
+        // The index is what `-p` takes. Paragraphs with no record behind them
+        // (.hwpx) print a dash and cannot be targeted.
+        for p in doc.paragraphs {
+            // Plain interpolation, not String(format:): "%s" wants a C string and
+            // handing it a Swift String prints garbage.
+            let label = p.source.map(String.init) ?? "-"
+            print(String(repeating: " ", count: max(0, 5 - label.count)) + label + "  " + p.text)
         }
     } else {
         print(doc.text)

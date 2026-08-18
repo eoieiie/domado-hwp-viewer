@@ -23,10 +23,17 @@ public enum HwpError: LocalizedError {
 public struct Paragraph: Hashable {
     public let text: String
     public let level: Int
+    /// Which `PARA_TEXT` record this came from, numbered across the whole
+    /// document. It is what lets an edit name one paragraph instead of every
+    /// paragraph that happens to read the same — a form with four cells saying
+    /// 진행 중 must be able to change one of them. `.hwpx` has no record stream
+    /// and reports nil.
+    public let source: Int?
 
-    public init(text: String, level: Int) {
+    public init(text: String, level: Int, source: Int? = nil) {
         self.text = text
         self.level = level
+        self.source = source
     }
 
     public var isInsideTable: Bool { level > 0 }
@@ -86,18 +93,28 @@ public struct HwpDocument {
                 return [p]
             case .table(let t):
                 return t.rows.flatMap { row in
-                    row.map { Paragraph(text: $0.text, level: 1) }
+                    row.map { Paragraph(text: $0.text, level: 1, source: $0.sources.first) }
                 }
             }
         }
     }
 
     private static func binaryRecords(data: Data) throws
-        -> [(tag: UInt16, level: Int, payload: Data)] {
-        var result: [(tag: UInt16, level: Int, payload: Data)] = []
+        -> [(tag: UInt16, level: Int, payload: Data, source: Int?)] {
+        var result: [(tag: UInt16, level: Int, payload: Data, source: Int?)] = []
+        // Body text records are numbered in document order, continuing across
+        // sections. `HwpEditor` numbers them the same way, so an index means the
+        // same record on both sides.
+        var textSeen = 0
         for section in try BodyStreams(data: data).inflated {
             for record in RecordSequence(data: section) {
-                result.append((tag: record.rawTag, level: Int(record.level), payload: record.payload))
+                var source: Int?
+                if record.rawTag == 67 {
+                    source = textSeen
+                    textSeen += 1
+                }
+                result.append((tag: record.rawTag, level: Int(record.level),
+                               payload: record.payload, source: source))
             }
         }
         return result

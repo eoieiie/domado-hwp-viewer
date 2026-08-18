@@ -24,6 +24,7 @@ public struct HwpEditReport {
 public enum HwpEditError: LocalizedError {
     case owpmlNotSupported
     case noMatch(String)
+    case notReplaceable(paragraph: Int)
     case inconsistentParagraph(String)
     case verificationFailed(String)
 
@@ -33,6 +34,9 @@ public enum HwpEditError: LocalizedError {
             return ".hwpx 문서 수정은 아직 지원하지 않습니다."
         case .noMatch(let s):
             return "‘\(s)’을(를) 문서에서 찾지 못했습니다."
+        case .notReplaceable(let n):
+            return "\(n)번째 문단은 글자 사이에 표·그림 같은 제어문자가 끼어 있어 "
+                + "통째로 바꿀 수 없습니다."
         case .inconsistentParagraph(let detail):
             return "문단 구조가 예상과 달라 수정을 중단했습니다 (\(detail)). 원본은 그대로입니다."
         case .verificationFailed(let detail):
@@ -85,16 +89,42 @@ public enum HwpEditor {
         try apply(changes, to: try Data(contentsOf: url))
     }
 
+    /// Replaces named paragraphs outright, keyed by `Paragraph.source`.
+    ///
+    /// Find-and-replace cannot express "this cell, not the other three that read
+    /// the same", which is what editing a form on screen needs. Everything after
+    /// the edits are chosen — the header counts, the position fixups, the reread
+    /// and comparison — is the same path `apply(_:to:)` takes.
+    public static func apply(paragraphs edits: [Int: String], to url: URL) throws -> HwpEditReport {
+        try apply(paragraphs: edits, to: try Data(contentsOf: url))
+    }
+
+    public static func apply(paragraphs edits: [Int: String],
+                             to original: Data) throws -> HwpEditReport {
+        try run(.paragraphs(edits), on: original)
+    }
+
     public static func apply(_ changes: [HwpChange], to original: Data) throws -> HwpEditReport {
+        let wanted = changes.filter { !$0.find.isEmpty && $0.find != $0.replaceWith }
+        guard !wanted.isEmpty else {
+            return HwpEditReport(data: original, replacements: 0, skipped: [])
+        }
+        return try run(.find(wanted), on: original)
+    }
+
+    /// Where the edits come from. Everything downstream is shared.
+    enum Source {
+        case find([HwpChange])
+        /// `PARA_TEXT` index → the text that record should hold.
+        case paragraphs([Int: String])
+    }
+
+    private static func run(_ source: Source, on original: Data) throws -> HwpEditReport {
         guard !(original.count >= 2 && original[original.startIndex] == 0x50
                 && original[original.startIndex + 1] == 0x4B) else {
             throw HwpEditError.owpmlNotSupported
         }
         let body = try BodyStreams(data: original)
-        let wanted = changes.filter { !$0.find.isEmpty && $0.find != $0.replaceWith }
-        guard !wanted.isEmpty else {
-            return HwpEditReport(data: original, replacements: 0, skipped: [])
-        }
 
         var edited = original
         var totalReplacements = 0
@@ -104,8 +134,11 @@ public enum HwpEditor {
         /// finished file can be checked against it.
         var expectedText: [String] = []
 
+        // Text records are numbered across the document, so the counter carries
+        // from one section to the next — the same numbering the parser hands out.
+        var textSeen = 0
         for (i, section) in body.inflated.enumerated() {
-            let result = try rewrite(section: section, applying: wanted)
+            let result = try rewrite(section: section, applying: source, from: &textSeen)
             totalReplacements += result.replacements
             skipped.append(contentsOf: result.skipped)
             matchedFinds.formUnion(result.matchedFinds)
@@ -115,7 +148,8 @@ public enum HwpEditor {
                 .replacing(stream: body.names[i], with: try body.packed(result.section))
         }
 
-        if let missing = wanted.first(where: { !matchedFinds.contains($0.find) }) {
+        if case .find(let wanted) = source,
+           let missing = wanted.first(where: { !matchedFinds.contains($0.find) }) {
             throw HwpEditError.noMatch(missing.find)
         }
         try verify(edited, against: original, expectedText: expectedText, body: body)
@@ -152,8 +186,8 @@ public enum HwpEditor {
         var delta: Int { newBytes.count / 2 - byteRange.count / 2 }
     }
 
-    private static func rewrite(section: Data,
-                                applying changes: [HwpChange]) throws -> SectionResult {
+    private static func rewrite(section: Data, applying source: Source,
+                                from textSeen: inout Int) throws -> SectionResult {
         let records = Array(RecordSequence(data: section))
         var groups: [Group] = []
         for r in records {
@@ -189,20 +223,34 @@ public enum HwpEditor {
         for group in groups {
             guard let textRecord = group.text else { continue }
             let buffer = ParagraphBuffer(payload: textRecord.payload)
+            let index = textSeen
+            textSeen += 1
 
             var edits: [Edit] = []
-            for change in changes {
-                let needle = Array(change.find.utf16)
-                let (usable, straddling) = buffer.matches(of: needle)
-                if straddling > 0 {
-                    skipped.append("‘\(change.find)’ \(straddling)곳 — 글자 사이에 표·그림 같은 "
-                                   + "제어문자가 끼어 있어 건너뜀")
+            switch source {
+            case .find(let changes):
+                for change in changes {
+                    let needle = Array(change.find.utf16)
+                    let (usable, straddling) = buffer.matches(of: needle)
+                    if straddling > 0 {
+                        skipped.append("‘\(change.find)’ \(straddling)곳 — 글자 사이에 표·그림 같은 "
+                                       + "제어문자가 끼어 있어 건너뜀")
+                    }
+                    guard !usable.isEmpty else { continue }
+                    matchedFinds.insert(change.find)
+                    let bytes = Data(Array(change.replaceWith.utf16)
+                        .flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] })
+                    edits.append(contentsOf: usable.map { Edit(byteRange: $0, newBytes: bytes) })
                 }
-                guard !usable.isEmpty else { continue }
-                matchedFinds.insert(change.find)
-                let bytes = Data(Array(change.replaceWith.utf16)
-                    .flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] })
-                edits.append(contentsOf: usable.map { Edit(byteRange: $0, newBytes: bytes) })
+            case .paragraphs(let wanted):
+                if let newText = wanted[index], newText != buffer.text {
+                    guard let whole = buffer.wholeRange() else {
+                        throw HwpEditError.notReplaceable(paragraph: index + 1)
+                    }
+                    let bytes = Data(Array(newText.utf16)
+                        .flatMap { [UInt8($0 & 0xFF), UInt8($0 >> 8)] })
+                    edits.append(Edit(byteRange: whole, newBytes: bytes))
+                }
             }
 
             guard !edits.isEmpty else {

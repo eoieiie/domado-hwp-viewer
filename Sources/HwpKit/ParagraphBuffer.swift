@@ -67,3 +67,19 @@ struct ParagraphBuffer {
         return (usable, straddling)
     }
 }
+
+extension ParagraphBuffer {
+    /// The byte range covering all visible text, when it is one unbroken run.
+    ///
+    /// Replacing a paragraph wholesale means writing over this range. If a control
+    /// character sits between two visible characters — a table or image anchored
+    /// mid-paragraph — there is no single range that covers the text without also
+    /// covering the control, so this reports nothing and the edit is refused.
+    func wholeRange() -> Range<Int>? {
+        guard let first = offsets.first, let last = offsets.last else { return nil }
+        guard offsets.enumerated().allSatisfy({ $0.element == first + 2 * $0.offset }) else {
+            return nil
+        }
+        return first ..< (last + 2)
+    }
+}

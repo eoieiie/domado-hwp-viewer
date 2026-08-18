@@ -10,15 +10,24 @@ public struct TableCell: Hashable, Identifiable {
     /// Joined once at parse time. As a computed property this rebuilt the string
     /// on every access, and SwiftUI reads it on each layout pass.
     public let text: String
+    /// The `PARA_TEXT` record behind each line of this cell, in the same order.
+    /// A cell holding three lines is three records, and an edit has to name the
+    /// one it means.
+    public let sources: [Int]
 
     public var id: Int { row << 20 | column }
 
-    init(row: Int, column: Int, rowSpan: Int, columnSpan: Int, lines: [String]) {
+    /// True when the cell is a single record, which is the only shape that can be
+    /// replaced as one piece. Form cells are almost always this.
+    public var isSingleLine: Bool { sources.count == 1 }
+
+    init(row: Int, column: Int, rowSpan: Int, columnSpan: Int, lines: [(String, Int?)]) {
         self.row = row
         self.column = column
         self.rowSpan = rowSpan
         self.columnSpan = columnSpan
-        self.text = lines.joined(separator: "\n")
+        self.text = lines.map(\.0).joined(separator: "\n")
+        self.sources = lines.compactMap(\.1)
     }
 }
 
@@ -156,7 +165,7 @@ struct TableBuilder {
         let id: Int
         var cells: [TableCell] = []
         var current: (row: Int, col: Int, rowSpan: Int, colSpan: Int)?
-        var buffer: [String] = []
+        var buffer: [(String, Int?)] = []
     }
 
     private var stack: [Frame] = []
@@ -168,7 +177,7 @@ struct TableBuilder {
     static let maxColumns = 128
     static let maxRows = 4096
 
-    static func build(records: [(tag: UInt16, level: Int, payload: Data)],
+    static func build(records: [(tag: UInt16, level: Int, payload: Data, source: Int?)],
                       decode: (Data) -> String) -> [Block] {
         var b = TableBuilder()
         for r in records { b.consume(r, decode: decode) }
@@ -176,7 +185,7 @@ struct TableBuilder {
         return b.blocks
     }
 
-    private mutating func consume(_ r: (tag: UInt16, level: Int, payload: Data),
+    private mutating func consume(_ r: (tag: UInt16, level: Int, payload: Data, source: Int?),
                                   decode: (Data) -> String) {
         // Leaving a table: any record at or above the control's level ends it.
         while let top = stack.last, r.level <= top.controlLevel {
@@ -217,9 +226,9 @@ struct TableBuilder {
             guard !line.isEmpty else { break }
             if stack.isEmpty {
                 let depth = max(0, (r.level - 1) / 2)
-                blocks.append(.paragraph(Paragraph(text: line, level: depth)))
+                blocks.append(.paragraph(Paragraph(text: line, level: depth, source: r.source)))
             } else {
-                stack[stack.count - 1].buffer.append(line)
+                stack[stack.count - 1].buffer.append((line, r.source))
             }
 
         default:
@@ -256,7 +265,8 @@ struct TableBuilder {
         } else {
             // A nested table: fold its text into the enclosing cell rather than
             // trying to render grids inside grids.
-            stack[stack.count - 1].buffer.append(contentsOf: top.cells.map(\.text))
+            stack[stack.count - 1].buffer.append(
+                contentsOf: top.cells.map { ($0.text, $0.sources.first) })
         }
     }
 
