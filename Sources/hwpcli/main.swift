@@ -159,9 +159,21 @@ if listZip || extractTo != nil {
         print(String(format: "  %9.1fKB  %@%@", Double(e.uncompressedSize) / 1024,
                      e.name, mark))
     }
-    if !broken.isEmpty {
-        print("\n윈도우에서 만든 압축입니다. Finder로 풀면 이 \(broken.count)개는 "
-              + "이름이 ????로 깨집니다. -x 폴더 로 풀면 제대로 나옵니다.")
+    let health = zip.nameHealth
+    print("")
+    if health.isClean {
+        print("이름 상태: 정상 — 맥에서도 윈도우에서도 안 깨집니다.")
+    }
+    if health.breaksOnMac {
+        print("맥에서 깨짐: \(health.cp949)개가 CP949입니다. "
+              + "Finder로 풀면 ????가 됩니다. -x 폴더 로 풀면 제대로 나옵니다.")
+    }
+    if health.breaksOnWindows {
+        var why: [String] = []
+        if health.decomposed > 0 { why.append("자음·모음 분리 \(health.decomposed)개") }
+        if health.undeclared > 0 { why.append("UTF-8 표시 없음 \(health.undeclared)개") }
+        print("윈도우에서 깨짐: " + why.joined(separator: ", ") + ". "
+              + "-c 로 다시 묶어서 보내세요.")
     }
     exit(0)
 }

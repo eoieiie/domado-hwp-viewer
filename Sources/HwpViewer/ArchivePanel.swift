@@ -10,6 +10,7 @@ import SwiftUI
 struct ArchiveContents {
     let url: URL
     let rows: [Row]
+    let health: ZipArchive.NameHealth
 
     struct Row: Identifiable {
         let id = UUID()
@@ -27,6 +28,7 @@ struct ArchiveContents {
             return nil
         }
         self.url = url
+        self.health = zip.nameHealth
         self.rows = zip.entries
             .filter { !$0.isDirectory }
             .map { Row(name: $0.name, size: $0.uncompressedSize,
@@ -71,7 +73,7 @@ struct ArchivePanel: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            if contents.repairedCount > 0 { warning }
+            verdict
         }
     }
 
@@ -105,17 +107,37 @@ struct ArchivePanel: View {
         .padding(12)
     }
 
-    private var warning: some View {
+    /// Says which side this archive breaks on, because neither side can see its
+    /// own damage: one made on Windows reads as `????` here, one made here reads
+    /// as mojibake there.
+    @ViewBuilder
+    private var verdict: some View {
+        let health = contents.health
+        if health.isClean {
+            banner("이름이 정상입니다. 맥에서도 윈도우에서도 안 깨집니다.",
+                   icon: "checkmark.seal.fill", tint: .green)
+        } else if health.breaksOnMac {
+            banner("윈도우에서 만든 압축입니다. Finder로 풀면 \(health.cp949)개의 이름이 "
+                   + "????로 깨집니다. 여기서 풀면 제대로 나옵니다.",
+                   icon: "exclamationmark.triangle.fill", tint: .orange)
+        } else {
+            var why: [String] = []
+            if health.decomposed > 0 { why.append("자음·모음이 분리됨 \(health.decomposed)개") }
+            if health.undeclared > 0 { why.append("UTF-8 표시 없음 \(health.undeclared)개") }
+            banner("이대로 윈도우에 보내면 이름이 깨집니다 (" + why.joined(separator: ", ")
+                   + "). 풀어서 다시 묶으면 고쳐집니다.",
+                   icon: "exclamationmark.triangle.fill", tint: .orange)
+        }
+    }
+
+    private func banner(_ text: String, icon: String, tint: Color) -> some View {
         HStack(spacing: 7) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            Text("윈도우에서 만든 압축입니다. Finder로 풀면 \(contents.repairedCount)개의 "
-                 + "이름이 ????로 깨집니다. 여기서 풀면 제대로 나옵니다.")
-                .font(.caption)
+            Image(systemName: icon).foregroundStyle(tint)
+            Text(text).font(.caption)
             Spacer()
         }
         .padding(10)
-        .background(.orange.opacity(0.10))
+        .background(tint.opacity(0.10))
     }
 
     private func icon(for name: String) -> String {

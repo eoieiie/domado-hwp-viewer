@@ -61,7 +61,10 @@ extension ZipArchive {
     /// parts onto the destination cannot leave it, and there is nothing to get
     /// subtly wrong about the comparison afterwards.
     private func safeComponents(of name: String) -> [String]? {
-        let parts = name
+        // Normalised here, not at decode time: the reader has to be able to
+        // report that an archive holds decomposed names, but what lands on disk
+        // must be composed or the problem simply moves to the next hop.
+        let parts = name.precomposedStringWithCanonicalMapping
             .replacingOccurrences(of: "\\", with: "/")
             .split(separator: "/")
             .map(String.init)
@@ -107,5 +110,36 @@ extension ZipArchive {
         NSError(domain: NSPOSIXErrorDomain, code: Int(errno),
                 userInfo: [NSLocalizedDescriptionKey:
                             "\(path): \(String(cString: strerror(errno)))"])
+    }
+}
+
+extension ZipArchive {
+    /// What is wrong with this archive's names, and for whom.
+    ///
+    /// The two failure directions are not symmetric, and neither is visible on
+    /// the machine that caused it. An archive from Korean Windows reads as `????`
+    /// here; one made here reads as mojibake there. Being able to say which is
+    /// the difference between "trust this" and "repack it before sending".
+    public struct NameHealth {
+        /// Names stored in CP949 — the archive came from Korean Windows and
+        /// other tools on this Mac will show them as `????`.
+        public let cp949: Int
+        /// Names with Hangul split into jamo. macOS writes these.
+        public let decomposed: Int
+        /// Non-ASCII names the archive does not declare UTF-8, so a Windows
+        /// reader falls back to its own code page and sees mojibake.
+        public let undeclared: Int
+
+        public var breaksOnMac: Bool { cp949 > 0 }
+        public var breaksOnWindows: Bool { decomposed > 0 || undeclared > 0 }
+        public var isClean: Bool { !breaksOnMac && !breaksOnWindows }
+    }
+
+    public var nameHealth: NameHealth {
+        let real = entries.filter { !$0.name.hasPrefix("__MACOSX/") }
+        return NameHealth(
+            cp949: real.filter { $0.nameEncoding == .cp949 }.count,
+            decomposed: real.filter { $0.isDecomposed }.count,
+            undeclared: real.filter { !$0.declaresUTF8 && !$0.name.allSatisfy(\.isASCII) }.count)
     }
 }

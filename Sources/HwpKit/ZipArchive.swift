@@ -20,6 +20,23 @@ public struct ZipArchive {
     public struct Entry {
         public let name: String
         public let nameEncoding: NameEncoding
+        /// Whether the archive declared its names UTF-8 (general purpose bit 11).
+        ///
+        /// Not used to decode — too many tools write UTF-8 without setting it —
+        /// but it is exactly what a Windows reader consults. An archive holding
+        /// UTF-8 names with this clear is one that will be misread as CP949 on
+        /// the other side.
+        public let declaresUTF8: Bool
+
+        /// True when the name is stored with its Hangul split into jamo. macOS
+        /// writes names this way; it looks right here and wrong elsewhere.
+        ///
+        /// Compared as bytes on purpose. Swift string equality is canonical
+        /// equivalence, so a decomposed name and its composed form test as equal
+        /// and this check silently reported every archive clean.
+        public var isDecomposed: Bool {
+            Array(name.utf8) != Array(name.precomposedStringWithCanonicalMapping.utf8)
+        }
         let compressionMethod: UInt16
         let compressedSize: Int
         public let uncompressedSize: Int
@@ -52,6 +69,7 @@ public struct ZipArchive {
 
         for _ in 0..<count {
             guard offset + 46 <= data.count, data.u32(at: offset) == 0x0201_4B50 else { break }
+            let flags = data.u16(at: offset + 8)
             let method = data.u16(at: offset + 10)
             let compressed = Int(data.u32(at: offset + 20))
             let uncompressed = Int(data.u32(at: offset + 24))
@@ -67,6 +85,7 @@ public struct ZipArchive {
 
             entries.append(Entry(name: name,
                                  nameEncoding: nameEncoding,
+                                 declaresUTF8: flags & 0x800 != 0,
                                  compressionMethod: method,
                                  compressedSize: compressed,
                                  uncompressedSize: uncompressed,
@@ -89,15 +108,16 @@ public struct ZipArchive {
     /// through to CP949. Korean in CP949 is almost always invalid UTF-8 — its lead
     /// UTF-8 continuation bytes — so the two do not get confused in practice.
     ///
-    /// The result is normalised to precomposed form. macOS writes filenames
-    /// decomposed (`한` as `ᄒ`+`ᅡ`+`ᆫ`), which survives locally and then looks
-    /// wrong everywhere else.
+    /// The name is returned exactly as stored, **not** normalised. Repairing it
+    /// is the extractor's job; this layer has to be able to report that the
+    /// archive holds decomposed names, and precomposing here would erase the
+    /// evidence.
     static func decodeName(_ bytes: Data) -> (String, NameEncoding) {
         if let utf8 = String(data: bytes, encoding: .utf8) {
-            return (utf8.precomposedStringWithCanonicalMapping, .utf8)
+            return (utf8, .utf8)
         }
         if let korean = String(data: bytes, encoding: cp949) {
-            return (korean.precomposedStringWithCanonicalMapping, .cp949)
+            return (korean, .cp949)
         }
         return (String(decoding: bytes, as: UTF8.self), .utf8)
     }
