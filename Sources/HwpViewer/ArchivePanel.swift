@@ -121,13 +121,18 @@ struct ArchivePanel: View {
                    + "????로 깨집니다. 여기서 풀면 제대로 나옵니다.",
                    icon: "exclamationmark.triangle.fill", tint: .orange)
         } else {
-            var why: [String] = []
-            if health.decomposed > 0 { why.append("자음·모음이 분리됨 \(health.decomposed)개") }
-            if health.undeclared > 0 { why.append("UTF-8 표시 없음 \(health.undeclared)개") }
-            banner("이대로 윈도우에 보내면 이름이 깨집니다 (" + why.joined(separator: ", ")
+            banner("이대로 윈도우에 보내면 이름이 깨집니다 (" + Self.reasons(health)
                    + "). 풀어서 다시 묶으면 고쳐집니다.",
                    icon: "exclamationmark.triangle.fill", tint: .orange)
         }
+    }
+
+    /// Built outside the view builder: it cannot accumulate into a `var`.
+    private static func reasons(_ health: ZipArchive.NameHealth) -> String {
+        var why: [String] = []
+        if health.decomposed > 0 { why.append("자음·모음이 분리됨 \(health.decomposed)개") }
+        if health.undeclared > 0 { why.append("UTF-8 표시 없음 \(health.undeclared)개") }
+        return why.joined(separator: ", ")
     }
 
     private func banner(_ text: String, icon: String, tint: Color) -> some View {
