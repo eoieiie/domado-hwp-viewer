@@ -155,7 +155,10 @@ if listZip || extractTo != nil {
 
     print("파일 \(zip.entries.count)개")
     for e in zip.entries where !e.isDirectory {
-        let mark = e.nameEncoding == .cp949 ? "  ← CP949에서 복구" : ""
+        var mark = e.nameEncoding == .cp949 ? "  ← CP949에서 복구" : ""
+        if e.uncompressedSize > ZipArchive.maxEntryBytes {
+            mark += "  ⚠︎ 한도 초과 — 풀지 않습니다"
+        }
         print(String(format: "  %9.1fKB  %@%@", Double(e.uncompressedSize) / 1024,
                      e.name, mark))
     }

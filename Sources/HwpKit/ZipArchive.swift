@@ -95,6 +95,17 @@ public struct ZipArchive {
         guard !entries.isEmpty else { return nil }
     }
 
+    /// Ceilings on what an archive is allowed to talk this program into
+    /// allocating.
+    ///
+    /// An entry states its own uncompressed size and the reader believes it in
+    /// order to size a buffer. A file claiming four gigabytes costs a few bytes
+    /// to write and takes the process down — the classic decompression bomb.
+    /// These bounds are far above any real document and far below anything that
+    /// hurts. They matter the moment this opens a file someone else made.
+    public static let maxEntryBytes = 512 << 20      // 512MB
+    public static let maxTotalBytes = 2 << 30        // 2GB
+
     /// CP949, which is what Korean Windows writes when it does not claim UTF-8.
     private static let cp949 = String.Encoding(rawValue:
         CFStringConvertEncodingToNSStringEncoding(
@@ -129,6 +140,7 @@ public struct ZipArchive {
     }
 
     public func read(_ e: Entry) -> Data? {
+        guard e.uncompressedSize <= Self.maxEntryBytes else { return nil }
         let lo = e.localHeaderOffset
         guard lo + 30 <= data.count, data.u32(at: lo) == 0x0403_4B50 else { return nil }
         let nameLen = Int(data.u16(at: lo + 26))
@@ -168,7 +180,10 @@ public struct ZipArchive {
     }
 
     static func inflate(_ input: Data, expected: Int) -> Data? {
-        var capacity = max(expected, 64 * 1024)
+        // The starting guess may be the archive's own claim, so it is clamped
+        // before it becomes an allocation, and the growth loop stops at the same
+        // ceiling rather than quadrupling its way to the moon.
+        var capacity = min(max(expected, 64 * 1024), maxEntryBytes)
         for _ in 0..<6 {
             var output = Data(count: capacity)
             let written = output.withUnsafeMutableBytes { dst -> Int in
@@ -179,7 +194,8 @@ public struct ZipArchive {
                 }
             }
             if written > 0 && written < capacity { return output.prefix(written) }
-            capacity *= 4
+            guard capacity < maxEntryBytes else { return nil }
+            capacity = min(capacity * 4, maxEntryBytes)
         }
         return nil
     }

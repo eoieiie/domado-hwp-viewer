@@ -29,6 +29,9 @@ extension ZipArchive {
         var written: [URL] = []
         var skipped: [(name: String, reason: String)] = []
         var repaired = false
+        /// Guards the whole operation, not just each entry: a thousand entries
+        /// each under the per-file ceiling still add up to a full disk.
+        var totalBytes = 0
 
         for entry in entries {
             if entry.nameEncoding == .cp949 { repaired = true }
@@ -43,10 +46,19 @@ extension ZipArchive {
                 try Self.makeDirectory(path)
                 continue
             }
+            guard entry.uncompressedSize <= Self.maxEntryBytes else {
+                skipped.append((entry.name, "너무 큽니다 — 압축 폭탄일 수 있어 건너뜀"))
+                continue
+            }
+            guard totalBytes + entry.uncompressedSize <= Self.maxTotalBytes else {
+                skipped.append((entry.name, "전체 용량 한도를 넘어 건너뜀"))
+                continue
+            }
             guard let bytes = read(entry) else {
                 skipped.append((entry.name, "풀지 못함 (지원하지 않는 압축 방식일 수 있음)"))
                 continue
             }
+            totalBytes += bytes.count
             try Self.makeDirectory(([root.path] + parts.dropLast()).joined(separator: "/"))
             try Self.write(bytes, to: path)
             written.append(URL(fileURLWithPath: path))
