@@ -29,7 +29,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let model = DocumentModel.shared
             model.accept(urls: [URL(fileURLWithPath: path)])
             model.query = environment["HWP_DEBUG_QUERY"] ?? ""
-            if environment["HWP_DEBUG_EXPAND"] != nil { model.expandCells = true }
             switch environment["HWP_DEBUG_PANEL"] {
             case "images": model.showImages = true
             case "edit": model.showEditor = true
@@ -80,7 +79,6 @@ final class DocumentModel: ObservableObject {
     @Published var query = ""
     @Published var showTableIndent = true
     @Published var showTableGrid = true
-    @Published var expandCells = false
     @Published var images: [HwpImage] = []
     @Published var showImages = false
     @Published var showEditor = false
@@ -351,9 +349,6 @@ struct ContentView: View {
                     Toggle("표 보기", isOn: $model.showTableGrid)
                         .toggleStyle(.checkbox)
                         .disabled(!model.query.isEmpty)
-                    Toggle("긴 셀 펼치기", isOn: $model.expandCells)
-                        .toggleStyle(.checkbox)
-                        .disabled(!model.showTableGrid || !model.query.isEmpty)
                     if !model.images.isEmpty {
                         Button {
                             model.showImages = true
@@ -410,7 +405,7 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.query.isEmpty && model.showTableGrid, let doc = model.document {
-            BlocksView(blocks: doc.blocks, expandCells: model.expandCells, model: model)
+            BlocksView(blocks: doc.blocks, model: model)
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 7) {
@@ -497,7 +492,6 @@ struct DropPrompt: View {
 /// climbed past a gigabyte. Nothing in this view may depend on measured geometry.
 struct BlocksView: View {
     let blocks: [Block]
-    let expandCells: Bool
     @ObservedObject var model: DocumentModel
 
     var body: some View {
@@ -524,7 +518,7 @@ struct BlocksView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .table(let table):
-            TableGrid(table: table, expanded: expandCells, model: model)
+            TableGrid(table: table, model: model)
         }
     }
 }
@@ -537,7 +531,6 @@ struct BlocksView: View {
 /// that combination pegs the main thread.
 struct TableGrid: View {
     let table: HwpKit.Table
-    let expanded: Bool
     @ObservedObject var model: DocumentModel
 
     /// Target width for a whole table. Columns split this, so a one-column table
@@ -558,7 +551,6 @@ struct TableGrid: View {
                 ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
                     Text(row.map(\.text).joined(separator: "  |  "))
                         .font(.callout)
-                        .lineLimit(expanded ? nil : 4)
                         .frame(width: Self.tableWidth, alignment: .topLeading)
                 }
             }
@@ -580,7 +572,7 @@ struct TableGrid: View {
                         switch slot {
                         case .cell(let cell):
                             CellView(cell: cell, columnWidth: columnWidth,
-                                     expanded: expanded, model: model)
+                                     model: model)
                                 .gridCellColumns(cell.columnSpan)
                         case .merged(let columns):
                             MergedSlotView(columnWidth: columnWidth, columns: columns)
@@ -652,14 +644,7 @@ struct CellView: View {
     /// width, so the grid can never settle on a column layout — that is what sent
     /// memory past a gigabyte. `textSelection` and `fixedSize` are left off too:
     /// each adds per-cell work that a hundred-cell form multiplies.
-    private static let collapsedLines = 6
     let columnWidth: CGFloat
-
-    /// Whether long cells are shown in full. Driven from one control in the
-    /// toolbar rather than a tap handler per cell: attaching a gesture to every
-    /// cell put a hundred-odd hit-test targets under the cursor, and AppKit
-    /// walked all of them on each mouse move — the window stuttered on hover.
-    let expanded: Bool
     @ObservedObject var model: DocumentModel
 
     /// Only a cell that is one record can be replaced as a single piece; a cell
@@ -676,14 +661,14 @@ struct CellView: View {
             } else {
                 Text(model.text(for: cell.sources.first, original: cell.text))
                     .font(.callout)
-                    .lineLimit(expanded ? nil : Self.collapsedLines)
-                    // Only while expanded. A `Text` in a fixed-width frame gets
+                    // A cell is never cut. A `Text` in a fixed-width frame is
                     // truncated when the height it is offered is less than it
-                    // needs, so lifting the line limit alone left the ellipsis
-                    // in place. `fixedSize` makes it demand its full height —
-                    // and costs a measurement pass per cell, which is why it is
-                    // not on while reading.
-                    .fixedSize(horizontal: false, vertical: expanded)
+                    // needs, so `fixedSize` is what makes it demand its full
+                    // height — a line limit alone left the ellipsis in place.
+                    // It costs a measurement pass per cell; showing the document
+                    // as it is written is worth that, and a control that hides
+                    // half a cell until you find the toggle is not.
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(width: columnWidth * CGFloat(cell.columnSpan) - 18,
