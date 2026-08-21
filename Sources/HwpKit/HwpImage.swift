@@ -15,7 +15,6 @@ public struct HwpImage: Identifiable, Hashable {
     public let storedByteCount: Int
 
     private let payload: Data
-    private let deflated: Bool
 
     public var id: String { name }
 
@@ -24,23 +23,39 @@ public struct HwpImage: Identifiable, Hashable {
     /// defeated the whole point of storing them compressed.
     public var byteCount: Int { data()?.count ?? storedByteCount }
 
-    init(name: String, payload: Data, deflated: Bool) {
+    init(name: String, payload: Data) {
         self.name = name
         self.format = (name as NSString).pathExtension.lowercased()
         self.payload = payload
-        self.deflated = deflated
         self.storedByteCount = payload.count
     }
 
     /// Decoded image bytes, ready to hand to `NSImage`.
+    ///
+    /// Whether a stream is compressed is decided by the bytes, not by the
+    /// document's compression flag. That flag is a default, and 한글 overrides it
+    /// per image: a JPEG is already compressed, so it goes into the container
+    /// untouched even in a compressed document. Reading the flag alone inflated
+    /// a stored JPEG and produced nothing — a 근로장학 지원서 exported an empty
+    /// folder and the image looked lost.
     public func data() -> Data? {
-        deflated ? Self.inflate(payload) : payload
+        if Self.signature(of: payload) != nil { return payload }
+        return Self.inflate(payload) ?? payload
     }
+
+    /// Whether the bytes are in the container as they are, rather than deflated.
+    /// Reads four bytes, so a list of images can say which is which without
+    /// inflating any of them.
+    public var isStored: Bool { Self.signature(of: payload) != nil }
 
     /// Filename extension inferred from the actual bytes rather than the stream
     /// name, since the two occasionally disagree.
     public func detectedFormat() -> String? {
-        guard let d = data(), d.count >= 4 else { return nil }
+        data().flatMap(Self.signature)
+    }
+
+    private static func signature(of d: Data) -> String? {
+        guard d.count >= 4 else { return nil }
         let b = [UInt8](d.prefix(4))
         switch (b[0], b[1], b[2], b[3]) {
         case (0x89, 0x50, 0x4E, 0x47): return "png"
@@ -75,18 +90,17 @@ extension HwpDocument {
                 .compactMap { entry in
                     guard let bytes = zip.read(entry) else { return nil }
                     return HwpImage(name: (entry.name as NSString).lastPathComponent,
-                                    payload: bytes, deflated: false)
+                                    payload: bytes)
                 }
         }
 
         let cf = try CompoundFile(data: data)
-        let compressed = (cf.read("FileHeader").map { $0.u32(at: 36) & 1 == 1 }) ?? true
         return cf.streamNames
             .filter { $0.uppercased().hasPrefix("BIN") }
             .sorted()
             .compactMap { name in
                 guard let bytes = cf.read(name) else { return nil }
-                return HwpImage(name: name, payload: bytes, deflated: compressed)
+                return HwpImage(name: name, payload: bytes)
             }
     }
 }

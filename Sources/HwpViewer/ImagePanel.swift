@@ -128,7 +128,8 @@ struct ImagePanel: View {
                                 .lineLimit(1)
                             Text("\(image.format) · "
                                  + ByteCountFormatter.string(fromByteCount: Int64(image.storedByteCount),
-                                                             countStyle: .file) + " (압축)")
+                                                             countStyle: .file)
+                                 + (image.isStored ? " (저장)" : " (압축)"))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
