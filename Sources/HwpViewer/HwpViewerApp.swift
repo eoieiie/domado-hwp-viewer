@@ -120,10 +120,13 @@ final class DocumentModel: ObservableObject {
 
     var summary: String {
         guard let document else { return "" }
-        let chars = document.paragraphs.reduce(0) { $0 + $1.text.count }
-        let tables = document.paragraphs.filter(\.isInsideTable).count
+        // `paragraphs` flattens `blocks` on every access — read it once.
+        // Counting table paragraphs here reported 31 for a form with 4 tables.
+        let paragraphs = document.paragraphs
+        let chars = paragraphs.reduce(0) { $0 + $1.text.count }
+        let tables = document.tables.count
         var parts = ["\(document.format.rawValue.uppercased())",
-                     "\(document.paragraphs.count)문단",
+                     "\(paragraphs.count)문단",
                      "\(chars)자"]
         if tables > 0 { parts.append("표 \(tables)") }
         return parts.joined(separator: " · ")
