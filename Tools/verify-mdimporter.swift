@@ -9,7 +9,7 @@ struct MDIface {
     var importData: @convention(c) (UnsafeMutableRawPointer?, CFMutableDictionary?, CFString?, CFString?) -> DarwinBoolean
 }
 
-let path = "/Users/eoieiie/Library/Spotlight/HwpImporter.mdimporter"
+let path = NSHomeDirectory() + "/Library/Spotlight/HwpImporter.mdimporter"
 let url = URL(fileURLWithPath: path) as CFURL
 guard let bundle = CFBundleCreate(nil, url) else { print("번들 실패"); exit(1) }
 let typeUUID = CFUUIDGetConstantUUIDWithBytes(nil, 0x8B,0x08,0xC4,0xBF,0x41,0x5B,0x11,0xD8,0xB3,0xF9,0x00,0x03,0x93,0x67,0x26,0xFC)
