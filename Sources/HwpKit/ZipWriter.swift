@@ -145,6 +145,14 @@ extension ZipWriter {
     ///
     /// A folder keeps its own name at the top so unpacking produces the folder
     /// back rather than scattering its contents into the destination.
+    /// Files macOS writes into a folder on its own. They are not the user's and
+    /// the person on the other end has no use for them: a folder holding one
+    /// document packed as "2개", and Windows showed a stray `.DS_Store` next to
+    /// it. Only these two — a dotfile the user made themselves is theirs to send.
+    private static func isMacMetadata(_ name: String) -> Bool {
+        name == ".DS_Store" || name.hasPrefix("._")
+    }
+
     public static func files(at urls: [URL]) -> [File] {
         var out: [File] = []
         let fm = FileManager.default
@@ -163,7 +171,8 @@ extension ZipWriter {
                                              includingPropertiesForKeys: [.isRegularFileKey])
             else { continue }
             for case let child as URL in walker {
-                guard (try? child.resourceValues(forKeys: [.isRegularFileKey]))?
+                guard !isMacMetadata(child.lastPathComponent),
+                      (try? child.resourceValues(forKeys: [.isRegularFileKey]))?
                     .isRegularFile == true,
                       let bytes = try? Data(contentsOf: child) else { continue }
                 let relative = child.path.dropFirst(url.path.count).drop { $0 == "/" }
